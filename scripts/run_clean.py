@@ -1,6 +1,12 @@
 # 入口脚本；读取配置并调度清洗流程
+import sys
+from pathlib import Path
+
 import yaml
 import typer
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 from cleaning.pipeline import run_cleaning
 
