@@ -1,0 +1,10 @@
+.vscode/
+saved_model/
+wandb/
+data/algebra2005/
+data/assist2012/
+data/assist2015/
+data/assist2017/
+data/bridge2algebra2006/
+data/ednet/
+data/junyi2015/
