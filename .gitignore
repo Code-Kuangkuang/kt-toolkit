@@ -10,3 +10,5 @@ data/bridge2algebra2006/
 data/ednet/
 data/junyi2015/
 configs/wandb.json
+__pycache__
+*.pyc
