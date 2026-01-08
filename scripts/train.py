@@ -1,4 +1,5 @@
 import datetime
+import json
 import os
 import uuid
 from pathlib import Path
@@ -27,6 +28,12 @@ def set_seed(seed):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+def save_run_config(path, payload):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=True)
 
 
 @app.command()
@@ -181,9 +188,48 @@ def main(
     if add_uuid == 1:
         run_name = f"{run_name}-{uuid.uuid4()}"
     ckpt_dir = os.path.join(save_dir, run_name)
-    hooks = [SaveBestHook(save_dir=ckpt_dir, filename=f"{emb_type}_model.pt")]
+
+    wandb_cfg = None
     if use_wandb == 1 and os.path.exists(wandb_config):
         wandb_cfg = load_cfg(wandb_config)
+
+    wandb_entity = None
+    if wandb_cfg:
+        wandb_entity = wandb_cfg.get("entity") or wandb_cfg.get("uid")
+
+    run_config = {
+        "run_name": run_name,
+        "timestamp": ts,
+        "save_dir": save_dir,
+        "ckpt_dir": ckpt_dir,
+        "device": device,
+        "dataset_name": dataset_name,
+        "model_name": model_name,
+        "emb_type": emb_type,
+        "fold": fold,
+        "seed": seed,
+        "use_wandb": bool(use_wandb),
+        "add_uuid": bool(add_uuid),
+        "config_paths": {
+            "kt_config": kt_config,
+            "data_config": data_config_path,
+            "wandb_config": wandb_config if wandb_cfg else None,
+        },
+        "train_config": train_cfg,
+        "model_config": model_cfg,
+        "dataset_config": dataset_cfg,
+        "wandb": {
+            "enabled": bool(wandb_cfg),
+            "project": wandb_cfg.get("project") if wandb_cfg else None,
+            "entity": wandb_entity,
+            "mode": wandb_cfg.get("mode") if wandb_cfg else None,
+        },
+        "argv": sys.argv,
+    }
+    save_run_config(os.path.join(ckpt_dir, "run_config.json"), run_config)
+
+    hooks = [SaveBestHook(save_dir=ckpt_dir, filename=f"{emb_type}_model.pt")]
+    if wandb_cfg:
         wandb_kwargs = {
             "enabled": True,
             "run_name": run_name,
@@ -195,7 +241,7 @@ def main(
                 "model_config": model_cfg,
             },
             "project": wandb_cfg.get("project"),
-            "entity": wandb_cfg.get("entity") or wandb_cfg.get("uid"),
+            "entity": wandb_entity,
             "api_key": wandb_cfg.get("api_key"),
         }
         mode = wandb_cfg.get("mode")
