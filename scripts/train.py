@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT))
 
 import core.trainers  # register trainers
 import datasets.init_dataset  # register dataset builders
-import models.dkt  # register models
+import models  # register models
 from core.config import load_cfg
 from core.factory import build_dataset, build_model, build_trainer
 from core.hooks import SaveBestHook, WandbHook
@@ -146,6 +146,8 @@ def main(
     if dropout is not None:
         model_cfg["dropout"] = dropout
 
+    model_kwargs = {k: v for k, v in model_cfg.items() if k != "learning_rate"}
+
     data_config = load_cfg(data_config_path)
     dataset_cfg = data_config[dataset_name]
     dataset_cfg["dpath"] = os.path.normpath(os.path.join(ROOT, dataset_cfg["dpath"]))
@@ -157,9 +159,8 @@ def main(
     model = build_model(
         model_name,
         num_c=dataset_cfg["num_c"],
-        emb_size=model_cfg["emb_size"],
-        dropout=model_cfg.get("dropout", 0.1),
         emb_type=emb_type,
+        **model_kwargs,
     ).to(device)
 
     print(f"Training on device: [bold]{device}[/bold]")
@@ -251,7 +252,7 @@ def main(
 
     # 构建Trainer并开始训练
     trainer = build_trainer(
-        "dkt",
+        model_name,
         model=model,
         train_loader=train_loader,
         valid_loader=valid_loader,
