@@ -61,6 +61,28 @@ def main(
         "--emb_size", "--emb-size",
         help="Embedding size for training"
         ),
+    
+    # 注意力相关
+    d_model: Optional[int] = typer.Option(
+        256,
+        "--d_model", "--d-model",
+        help="Dimension of the model"
+        ),
+    d_ff: Optional[int] = typer.Option(
+        512,
+        "--d_ff", "--d-ff",
+        help="Dimension of the feed forward network"
+        ),
+    num_attn_heads: Optional[int] = typer.Option(
+        8,
+        "--num_attn_heads", "--num-attn-heads",
+        help="Number of attention heads"
+        ),
+    n_blocks: Optional[int] = typer.Option(
+        4,
+        "--n_blocks", "--n-blocks",
+        help="Number of transformer blocks"
+        ),
 
     # 训练相关配置
     batch_size: Optional[int] = typer.Option(
@@ -159,6 +181,7 @@ def main(
     model = build_model(
         model_name,
         num_c=dataset_cfg["num_c"],
+        num_q=dataset_cfg["num_q"],
         emb_type=emb_type,
         **model_kwargs,
     ).to(device)
