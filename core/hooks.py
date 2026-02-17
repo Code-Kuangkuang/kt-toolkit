@@ -1,3 +1,4 @@
+import copy
 import os
 
 import torch
@@ -54,6 +55,34 @@ class SaveBestHook(Hook):
             save_path = os.path.join(self.save_dir, self.filename)
             torch.save(trainer.model.state_dict(), save_path)
             trainer.best_path = save_path
+
+
+class BestMetricsHook(Hook):
+    def __init__(self, metric_key="valid_auc", mode="max"):
+        self.metric_key = metric_key
+        self.mode = mode
+        self.best_value = None
+        self.best_metrics = None
+
+    def _is_better(self, value):
+        if self.best_value is None:
+            return True
+        if self.mode == "min":
+            return value < self.best_value
+        return value > self.best_value
+
+    def on_epoch_end(self, trainer, metrics):
+        if self.metric_key not in metrics:
+            return
+        value = metrics.get(self.metric_key)
+        if value is None:
+            return
+        if self._is_better(value):
+            self.best_value = value
+            self.best_metrics = copy.deepcopy(metrics)
+            trainer.best_metrics = self.best_metrics
+            trainer.best_metric_key = self.metric_key
+            trainer.best_metric_value = self.best_value
 
 
 class WandbHook(Hook):
