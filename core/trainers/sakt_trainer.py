@@ -7,8 +7,8 @@ from core.registry import TRAINER_REGISTRY
 from core.trainer import BaseTrainer
 
 
-@TRAINER_REGISTRY.register("akt")
-class AKTTrainer(BaseTrainer):
+@TRAINER_REGISTRY.register("sakt")
+class SAKTTrainer(BaseTrainer):
     def __init__(
         self,
         model,
@@ -34,7 +34,7 @@ class AKTTrainer(BaseTrainer):
         self.model.train()
         losses = []
         for batch in self.train_loader:
-            pred, target, reg_loss, loss = self._forward_batch(batch)
+            pred, target, loss = self._forward_batch(batch)
             if pred.numel() == 0:
                 continue
             self.optimizer.zero_grad()
@@ -49,7 +49,7 @@ class AKTTrainer(BaseTrainer):
         y_score = []
         with torch.no_grad():
             for batch in self.valid_loader:
-                pred, target, _, _ = self._forward_batch(batch)
+                pred, target, _ = self._forward_batch(batch)
                 if pred.numel() == 0:
                     continue
                 y_score.append(pred.detach().cpu().numpy())
@@ -81,52 +81,32 @@ class AKTTrainer(BaseTrainer):
         return (epoch - self.best_epoch) >= self.patience
 
     def _forward_batch(self, batch):
-        qseqs = batch["qseqs"].to(self.device)
-        cseqs = batch["cseqs"].to(self.device)
-        rseqs = batch["rseqs"].to(self.device)
-        qshft = batch["shft_qseqs"].to(self.device)
-        cshft = batch["shft_cseqs"].to(self.device)
+        qseqs = batch.get("qseqs")
+        cseqs = batch.get("cseqs")
+        rseqs = batch["rseqs"].to(self.device).long()
+        qshft = batch.get("shft_qseqs")
+        cshft = batch.get("shft_cseqs")
         rshft = batch["shft_rseqs"].to(self.device).float()
         sm = batch["smasks"].to(self.device)
 
-        q_full = self._concat_full(qseqs, qshft)
-        c_full = self._concat_full(cseqs, cshft)
-        r_full = self._concat_full(rseqs, rshft)
+        base_seqs = cseqs if cseqs is not None and cseqs.numel() > 0 else qseqs
+        base_shft = cshft if cshft is not None and cshft.numel() > 0 else qshft
+        if base_seqs is None or base_seqs.numel() == 0:
+            raise ValueError("SAKTTrainer requires question or concept sequences.")
 
-        if c_full is not None:
-            q_data = c_full
-            pid_data = q_full
-        else:
-            q_data = q_full
-            pid_data = None
+        base_seqs = base_seqs.to(self.device).long()
+        base_shft = base_shft.to(self.device).long()
 
-        if q_data is None:
-            raise ValueError("AKTTrainer requires concept or question sequences.")
-        if pid_data is None and getattr(self.model, "n_pid", 0) > 0:
-            raise ValueError("AKTTrainer requires question ids when n_pid > 0.")
+        preds = self.model(base_seqs, rseqs, base_shft)
 
-        if pid_data is None:
-            preds, reg_loss = self.model(q_data.long(), r_full.long())
-        else:
-            preds, reg_loss = self.model(q_data.long(), r_full.long(), pid_data.long())
-
-        preds = preds[:, 1:]
-        loss = cal_loss(self.model, [preds], rseqs, rshft, sm, preloss=[reg_loss] if reg_loss is not None else [])
+        loss = cal_loss(self.model, [preds], rseqs, rshft, sm)
         pred = torch.masked_select(preds, sm)
         target = torch.masked_select(rshft, sm)
-        return pred, target, reg_loss, loss
-
-    @staticmethod
-    def _concat_full(seqs, shft):
-        if seqs is None or seqs.numel() == 0:
-            return None
-        return torch.cat((seqs[:, :1], shft), dim=1)
+        return pred, target, loss
 
 
 def cal_loss(model, ys, r, rshft, sm, preloss=None):
     y = torch.masked_select(ys[0], sm)
     t = torch.masked_select(rshft, sm)
     loss = binary_cross_entropy(y.double(), t.double())
-    if preloss:
-        loss = loss + preloss[0]
     return loss

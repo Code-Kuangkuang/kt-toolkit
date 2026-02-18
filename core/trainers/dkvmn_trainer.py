@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 from sklearn import metrics
+from torch.nn.functional import binary_cross_entropy
 
 from core.registry import TRAINER_REGISTRY
 from core.trainer import BaseTrainer
@@ -33,12 +34,9 @@ class DKVMNTrainer(BaseTrainer):
         self.model.train()
         losses = []
         for batch in self.train_loader:
-            pred, target = self._forward_batch(batch)
+            pred, target, loss = self._forward_batch(batch)
             if pred.numel() == 0:
                 continue
-            loss = torch.nn.functional.binary_cross_entropy(
-                pred.double(), target.double()
-            )
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
@@ -51,7 +49,7 @@ class DKVMNTrainer(BaseTrainer):
         y_score = []
         with torch.no_grad():
             for batch in self.valid_loader:
-                pred, target = self._forward_batch(batch)
+                pred, target, _ = self._forward_batch(batch)
                 if pred.numel() == 0:
                     continue
                 y_score.append(pred.detach().cpu().numpy())
@@ -89,6 +87,14 @@ class DKVMNTrainer(BaseTrainer):
         sm = batch["smasks"].to(self.device)
 
         y = self.model(cseqs, rseqs)
+        loss = cal_loss(self.model, [y], rseqs, rshft, sm)
         pred = torch.masked_select(y, sm)
         target = torch.masked_select(rshft, sm)
-        return pred, target
+        return pred, target, loss
+
+
+def cal_loss(model, ys, r, rshft, sm, preloss=None):
+    y = torch.masked_select(ys[0], sm)
+    t = torch.masked_select(rshft, sm)
+    loss = binary_cross_entropy(y.double(), t.double())
+    return loss
