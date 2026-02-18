@@ -1,14 +1,13 @@
 import numpy as np
 import torch
-from sklearn import metrics
-from torch.nn.functional import binary_cross_entropy
+from torch.nn.functional import one_hot
 
 from core.registry import TRAINER_REGISTRY
 from core.trainer import BaseTrainer
 
 
-@TRAINER_REGISTRY.register("akt")
-class AKTTrainer(BaseTrainer):
+@TRAINER_REGISTRY.register("dkt+")
+class DKTPlusTrainer(BaseTrainer):
     def __init__(
         self,
         model,
@@ -34,7 +33,7 @@ class AKTTrainer(BaseTrainer):
         self.model.train()
         losses = []
         for batch in self.train_loader:
-            pred, target, reg_loss, loss = self._forward_batch(batch)
+            pred, target, loss = self._forward_batch(batch, with_loss=True)
             if pred.numel() == 0:
                 continue
             self.optimizer.zero_grad()
@@ -49,7 +48,7 @@ class AKTTrainer(BaseTrainer):
         y_score = []
         with torch.no_grad():
             for batch in self.valid_loader:
-                pred, target, _, _ = self._forward_batch(batch)
+                pred, target, _ = self._forward_batch(batch, with_loss=False)
                 if pred.numel() == 0:
                     continue
                 y_score.append(pred.detach().cpu().numpy())
@@ -61,10 +60,15 @@ class AKTTrainer(BaseTrainer):
         ts = np.concatenate(y_true, axis=0)
         ps = np.concatenate(y_score, axis=0)
         try:
+            auc = float(torch.tensor(0.0))
+            from sklearn import metrics
+
             auc = metrics.roc_auc_score(y_true=ts, y_score=ps)
         except Exception:
             auc = -1
         prelabels = [1 if p >= 0.5 else 0 for p in ps]
+        from sklearn import metrics
+
         acc = metrics.accuracy_score(ts, prelabels)
         return {"valid_auc": auc, "valid_acc": acc}
 
@@ -80,53 +84,46 @@ class AKTTrainer(BaseTrainer):
             return False
         return (epoch - self.best_epoch) >= self.patience
 
-    def _forward_batch(self, batch):
-        qseqs = batch["qseqs"].to(self.device)
-        cseqs = batch["cseqs"].to(self.device)
-        rseqs = batch["rseqs"].to(self.device)
-        qshft = batch["shft_qseqs"].to(self.device)
-        cshft = batch["shft_cseqs"].to(self.device)
+    def _forward_batch(self, batch, with_loss=True):
+        cseqs = batch["cseqs"].to(self.device).long()
+        rseqs = batch["rseqs"].to(self.device).long()
+        cshft = batch["shft_cseqs"].to(self.device).long()
         rshft = batch["shft_rseqs"].to(self.device).float()
         sm = batch["smasks"].to(self.device)
 
-        q_full = self._concat_full(qseqs, qshft)
-        c_full = self._concat_full(cseqs, cshft)
-        r_full = self._concat_full(rseqs, rshft)
+        y = self.model(cseqs, rseqs)
+        y_next = (y * one_hot(cshft.long(), self.model.num_c)).sum(-1)
+        y_curr = (y * one_hot(cseqs.long(), self.model.num_c)).sum(-1)
 
-        if c_full is not None:
-            q_data = c_full
-            pid_data = q_full
-        else:
-            q_data = q_full
-            pid_data = None
-
-        if q_data is None:
-            raise ValueError("AKTTrainer requires concept or question sequences.")
-        if pid_data is None and getattr(self.model, "n_pid", 0) > 0:
-            raise ValueError("AKTTrainer requires question ids when n_pid > 0.")
-
-        if pid_data is None:
-            preds, reg_loss = self.model(q_data.long(), r_full.long())
-        else:
-            preds, reg_loss = self.model(q_data.long(), r_full.long(), pid_data.long())
-
-        preds = preds[:, 1:]
-        loss = cal_loss(self.model, [preds], rseqs, rshft, sm, preloss=[reg_loss] if reg_loss is not None else [])
-        pred = torch.masked_select(preds, sm)
+        pred = torch.masked_select(y_next, sm)
         target = torch.masked_select(rshft, sm)
-        return pred, target, reg_loss, loss
 
-    @staticmethod
-    def _concat_full(seqs, shft):
-        if seqs is None or seqs.numel() == 0:
-            return None
-        return torch.cat((seqs[:, :1], shft), dim=1)
+        if not with_loss:
+            return pred, target, None
+
+        loss = cal_loss(self.model, y_next, y_curr, y, rseqs, rshft, sm)
+        return pred, target, loss
 
 
-def cal_loss(model, ys, r, rshft, sm, preloss=None):
-    y = torch.masked_select(ys[0], sm)
-    t = torch.masked_select(rshft, sm)
-    loss = binary_cross_entropy(y.double(), t.double())
-    if preloss:
-        loss = loss + preloss[0]
+def cal_loss(model, y_next, y_curr, y_full, rseqs, rshft, sm):
+    loss = torch.nn.functional.binary_cross_entropy(
+        y_next.double(), rshft.double()
+    )
+    loss_r = torch.nn.functional.binary_cross_entropy(
+        y_curr.double(), rseqs.float().double()
+    )
+    diff = y_full[:, 1:] - y_full[:, :-1]
+    loss_w1 = torch.masked_select(
+        torch.norm(diff, p=1, dim=-1), sm[:, 1:]
+    ).mean() / model.num_c
+    loss_w2 = torch.masked_select(
+        torch.norm(diff, p=2, dim=-1) ** 2, sm[:, 1:]
+    ).mean() / model.num_c
+
+    loss = (
+        loss
+        + model.lambda_r * loss_r
+        + model.lambda_w1 * loss_w1
+        + model.lambda_w2 * loss_w2
+    )
     return loss
