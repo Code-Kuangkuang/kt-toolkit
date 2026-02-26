@@ -83,13 +83,20 @@ class DKVMNTrainer(BaseTrainer):
     def _forward_batch(self, batch):
         cseqs = batch["cseqs"].to(self.device).long()
         rseqs = batch["rseqs"].to(self.device).long()
+        cshft = batch["shft_cseqs"].to(self.device).long()
         rshft = batch["shft_rseqs"].to(self.device).float()
         sm = batch["smasks"].to(self.device)
 
-        y = self.model(cseqs, rseqs)
+        cc = torch.cat((cseqs[:, 0:1], cshft), dim=1)
+        cr = torch.cat((rseqs[:, 0:1], rshft.long()), dim=1)
+
+        y_full = self.model(cc, cr)
+        y = y_full[:, 1:]
+
         loss = cal_loss(self.model, [y], rseqs, rshft, sm)
         pred = torch.masked_select(y, sm)
         target = torch.masked_select(rshft, sm)
+
         return pred, target, loss
 
 

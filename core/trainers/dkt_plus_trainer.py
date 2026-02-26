@@ -92,8 +92,10 @@ class DKTPlusTrainer(BaseTrainer):
         sm = batch["smasks"].to(self.device)
 
         y = self.model(cseqs, rseqs)
-        y_next = (y * one_hot(cshft.long(), self.model.num_c)).sum(-1)
-        y_curr = (y * one_hot(cseqs.long(), self.model.num_c)).sum(-1)
+        
+        # 💡 优化：用 gather 替代 one_hot，省显存提速度
+        y_next = y.gather(-1, cshft.unsqueeze(-1)).squeeze(-1)
+        y_curr = y.gather(-1, cseqs.unsqueeze(-1)).squeeze(-1)
 
         pred = torch.masked_select(y_next, sm)
         target = torch.masked_select(rshft, sm)
@@ -106,24 +108,31 @@ class DKTPlusTrainer(BaseTrainer):
 
 
 def cal_loss(model, y_next, y_curr, y_full, rseqs, rshft, sm):
-    loss = torch.nn.functional.binary_cross_entropy(
-        y_next.double(), rshft.double()
-    )
-    loss_r = torch.nn.functional.binary_cross_entropy(
-        y_curr.double(), rseqs.float().double()
-    )
+    # ✅ 1. 主干预测 Loss: 必须先用 sm 过滤！
+    y_next_masked = torch.masked_select(y_next, sm)
+    rshft_masked = torch.masked_select(rshft, sm)
+    loss = torch.nn.functional.binary_cross_entropy(y_next_masked.double(), rshft_masked.double())
+
+    # ✅ 2. 重建预测 Loss (L_r): 同样需要过滤！
+    y_curr_masked = torch.masked_select(y_curr, sm)
+    rseqs_masked = torch.masked_select(rseqs.float(), sm)
+    loss_r = torch.nn.functional.binary_cross_entropy(y_curr_masked.double(), rseqs_masked.double())
+
+    # ✅ 3. 平滑度惩罚 Loss (Waviness): 你原来写的这段是完全正确的！
     diff = y_full[:, 1:] - y_full[:, :-1]
     loss_w1 = torch.masked_select(
         torch.norm(diff, p=1, dim=-1), sm[:, 1:]
     ).mean() / model.num_c
+    
     loss_w2 = torch.masked_select(
         torch.norm(diff, p=2, dim=-1) ** 2, sm[:, 1:]
     ).mean() / model.num_c
 
-    loss = (
+    # 4. 加权求和
+    total_loss = (
         loss
         + model.lambda_r * loss_r
         + model.lambda_w1 * loss_w1
         + model.lambda_w2 * loss_w2
     )
-    return loss
+    return total_loss
