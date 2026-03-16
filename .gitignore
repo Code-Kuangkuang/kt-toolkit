@@ -1,6 +1,7 @@
 .vscode/
 saved_model/
 wandb/
+paper/
 data/algebra2005/
 data/assist2009/
 data/assist2012/
