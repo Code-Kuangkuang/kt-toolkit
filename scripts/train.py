@@ -55,10 +55,10 @@ def main(
         "--model_name", "--model-name",
         help="Name of the model to use. E.g., dkt, dkvmn"
         ),
-    emb_type: str = typer.Option(
-        "qid", 
+    emb_type: Optional[str] = typer.Option(
+        None,
         "--emb_type", "--emb-type",
-        help="Type of embedding to use. E.g., qid"
+        help="Embedding type (e.g., qid, iekt). If omitted, uses the model's default from kt_config."
         ),
     emb_size: Optional[int] = typer.Option(
         None, 
@@ -144,7 +144,7 @@ def main(
         help="Whether to use Weights and Biases for logging"
         ),
     add_uuid: int = typer.Option(
-        1, 
+        0, 
         "--add_uuid", "--add-uuid",
         help="Whether to add a unique identifier to the run name"
         ),

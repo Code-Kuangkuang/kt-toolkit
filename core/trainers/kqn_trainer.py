@@ -7,8 +7,8 @@ from core.registry import TRAINER_REGISTRY
 from core.trainer import BaseTrainer
 
 
-@TRAINER_REGISTRY.register("sakt")
-class SAKTTrainer(BaseTrainer):
+@TRAINER_REGISTRY.register("kqn")
+class KQNTrainer(BaseTrainer):
     def __init__(
         self,
         model,
@@ -104,17 +104,34 @@ class SAKTTrainer(BaseTrainer):
         rshft = batch["shft_rseqs"].to(self.device).float()
         sm = batch["smasks"].to(self.device)
 
+        # KQN one-hot indices are bounded by num_c, so prefer concept ids first.
         base_seqs = cseqs if cseqs is not None and cseqs.numel() > 0 else qseqs
         base_shft = cshft if cshft is not None and cshft.numel() > 0 else qshft
-        if base_seqs is None or base_seqs.numel() == 0:
-            raise ValueError("SAKTTrainer requires question or concept sequences.")
+
+        if (
+            base_seqs is None
+            or base_seqs.numel() == 0
+            or base_shft is None
+            or base_shft.numel() == 0
+        ):
+            raise ValueError("KQNTrainer requires valid sequences and shifted sequences.")
+
+        max_id = int(max(base_seqs.max().item(), base_shft.max().item()))
+        if max_id >= self.model.num_c:
+            raise ValueError(
+                f"KQN input id {max_id} is out of range for num_c={self.model.num_c}. "
+                "Use concept sequences (cseqs/shft_cseqs) or align ids with num_c."
+            )
 
         base_seqs = base_seqs.to(self.device).long()
         base_shft = base_shft.to(self.device).long()
 
+        # Forward through KQN model
         preds = self.model(base_seqs, rseqs, base_shft)
 
+        # Compute loss
         loss = cal_loss(self.model, [preds], rseqs, rshft, sm)
+
         pred = torch.masked_select(preds, sm)
         target = torch.masked_select(rshft, sm)
         return pred, target, loss

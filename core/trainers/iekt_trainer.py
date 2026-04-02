@@ -1,3 +1,4 @@
+import sys
 import numpy as np
 import torch
 from sklearn import metrics
@@ -7,8 +8,8 @@ from core.registry import TRAINER_REGISTRY
 from core.trainer import BaseTrainer
 
 
-@TRAINER_REGISTRY.register("sakt")
-class SAKTTrainer(BaseTrainer):
+@TRAINER_REGISTRY.register("iekt")
+class IEKTTrainer(BaseTrainer):
     def __init__(
         self,
         model,
@@ -20,8 +21,11 @@ class SAKTTrainer(BaseTrainer):
         hooks=None,
         metric_key="valid_auc",
         patience=10,
+        other_config=None,
         test_loader=None,
     ):
+        if other_config is None:
+            other_config = {}
         super().__init__(num_epochs=num_epochs, hooks=hooks, test_loader=test_loader)
         self.model = model
         self.train_loader = train_loader
@@ -30,6 +34,7 @@ class SAKTTrainer(BaseTrainer):
         self.device = device
         self.metric_key = metric_key
         self.patience = patience
+        self.other_config = other_config
 
     def _train_epoch(self, epoch):
         self.model.train()
@@ -37,7 +42,6 @@ class SAKTTrainer(BaseTrainer):
         total_batches = len(self.train_loader)
 
         print(f"\n== Epoch {epoch}/{self.num_epochs} ==")
-        print("=" * 50)
 
         for batch_idx, batch in enumerate(self.train_loader):
             pred, target, loss = self._forward_batch(batch)
@@ -49,13 +53,17 @@ class SAKTTrainer(BaseTrainer):
             losses.append(loss.item())
 
             # Progress bar
-            self._print_progress(batch_idx, total_batches, loss.item())
+            progress = (batch_idx + 1) / total_batches
+            bar_len = 25
+            filled = int(bar_len * progress)
+            bar = "█" * filled + "░" * (bar_len - filled)
+            pct = int(progress * 100)
+            print(f"  │{bar}│ {pct:3d}% | Loss: {loss.item():.4f}", flush=True)
 
-        # Show final
+        # Ensure 100% is shown at the end
         if losses:
-            bar = "█" * 25
+            bar = "█" * bar_len
             print(f"  │{bar}│ 100% | Loss: {losses[-1]:.4f}")
-
         return float(np.mean(losses)) if losses else 0.0
 
     def _eval_epoch(self, epoch):
@@ -96,27 +104,54 @@ class SAKTTrainer(BaseTrainer):
         return (epoch - self.best_epoch) >= self.patience
 
     def _forward_batch(self, batch):
+        # Prepare data
         qseqs = batch.get("qseqs")
         cseqs = batch.get("cseqs")
-        rseqs = batch["rseqs"].to(self.device).long()
+        rseqs = batch["rseqs"]
         qshft = batch.get("shft_qseqs")
         cshft = batch.get("shft_cseqs")
-        rshft = batch["shft_rseqs"].to(self.device).float()
-        sm = batch["smasks"].to(self.device)
+        rshft = batch["shft_rseqs"]
+        sm = batch["smasks"]
+        masks = batch.get("masks")
 
-        base_seqs = cseqs if cseqs is not None and cseqs.numel() > 0 else qseqs
-        base_shft = cshft if cshft is not None and cshft.numel() > 0 else qshft
-        if base_seqs is None or base_seqs.numel() == 0:
-            raise ValueError("SAKTTrainer requires question or concept sequences.")
+        # Move to device
+        if qseqs is not None:
+            qseqs = qseqs.to(self.device)
+        if cseqs is not None:
+            cseqs = cseqs.to(self.device)
+        if rseqs is not None:
+            rseqs = rseqs.to(self.device)
+        if qshft is not None:
+            qshft = qshft.to(self.device)
+        if cshft is not None:
+            cshft = cshft.to(self.device)
+        if rshft is not None:
+            rshft = rshft.to(self.device)
+        if sm is not None:
+            sm = sm.to(self.device)
+        if masks is not None:
+            masks = masks.to(self.device)
 
-        base_seqs = base_seqs.to(self.device).long()
-        base_shft = base_shft.to(self.device).long()
+        # Build data dict for IEKT model
+        data = {
+            "qseqs": qseqs,
+            "cseqs": cseqs,
+            "rseqs": rseqs,
+            "shft_qseqs": qshft,
+            "shft_cseqs": cshft,
+            "shft_rseqs": rshft,
+            "masks": masks if masks is not None else torch.zeros_like(sm),
+            "smasks": sm,
+        }
 
-        preds = self.model(base_seqs, rseqs, base_shft)
+        # Forward through model
+        pred, target, loss = self.model.train_one_step(data, process=True)
 
-        loss = cal_loss(self.model, [preds], rseqs, rshft, sm)
-        pred = torch.masked_select(preds, sm)
-        target = torch.masked_select(rshft, sm)
+        # Some implementations return [B, T] logits, while IEKT currently
+        # returns flattened valid positions; only mask in the matrix case.
+        if pred.dim() > 1:
+            pred = torch.masked_select(pred, sm)
+            target = torch.masked_select(target, sm)
         return pred, target, loss
 
     def evaluate_test(self):
@@ -147,10 +182,3 @@ class SAKTTrainer(BaseTrainer):
         prelabels = [1 if p >= 0.5 else 0 for p in ps]
         acc = metrics.accuracy_score(ts, prelabels)
         return {"test_auc": auc, "test_acc": acc}
-
-
-def cal_loss(model, ys, r, rshft, sm, preloss=None):
-    y = torch.masked_select(ys[0], sm)
-    t = torch.masked_select(rshft, sm)
-    loss = binary_cross_entropy(y.double(), t.double())
-    return loss

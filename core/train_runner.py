@@ -37,15 +37,20 @@ def apply_overrides(train_cfg, model_cfg, overrides):
         model_cfg["emb_size"] = overrides["emb_size"]
     if overrides.get("dropout") is not None:
         model_cfg["dropout"] = overrides["dropout"]
+    if overrides.get("dataset_mode") is not None:
+        train_cfg["dataset_mode"] = overrides["dataset_mode"]
+    if overrides.get("patience") is not None:
+        train_cfg["patience"] = overrides["patience"]
 
 
 def build_optimizer(train_cfg, model_cfg, model):
     optimizer_name = train_cfg.get("optimizer", "adam").lower()
+    weight_decay = model_cfg.get("weight_decay", train_cfg.get("weight_decay", 0.0))
     if optimizer_name == "sgd":
         return torch.optim.SGD(
-            model.parameters(), lr=model_cfg["learning_rate"], momentum=0.9
+            model.parameters(), lr=model_cfg["learning_rate"], momentum=0.9, weight_decay=weight_decay
         )
-    return torch.optim.Adam(model.parameters(), lr=model_cfg["learning_rate"])
+    return torch.optim.Adam(model.parameters(), lr=model_cfg["learning_rate"], weight_decay=weight_decay)
 
 
 def build_hooks(wandb_cfg, run_name, dataset_name, model_name, fold_id, train_cfg, model_cfg, cv_run_name, ckpt_dir, emb_type):
@@ -177,9 +182,20 @@ def train_one_fold(
     train_cfg_local = kt_cfg["train_config"]
     model_cfg_local = kt_cfg[model_name]
 
+    resolved_emb_type = emb_type or model_cfg_local.get("emb_type", "qid")
+    model_cfg_local["emb_type"] = resolved_emb_type
+
     apply_overrides(train_cfg_local, model_cfg_local, overrides)
 
-    model_kwargs = {k: v for k, v in model_cfg_local.items() if k != "learning_rate"}
+    if train_cfg_local.get("patience") == -1:
+        train_cfg_local["patience"] = None
+
+    # Filter out learning_rate and other_config parameters for model
+    other_config_keys = {"loss_c_all_lambda", "loss_q_all_lambda", "loss_c_next_lambda", "loss_q_next_lambda",
+                         "output_mode", "output_c_all_lambda", "output_c_next_lambda", "output_q_all_lambda",
+                         "output_q_next_lambda", "emb_type", "learning_rate", "use_timestamps", "dpath",
+                         "num_at", "num_it"}
+    model_kwargs = {k: v for k, v in model_cfg_local.items() if k not in other_config_keys}
 
     data_config = copy.deepcopy(data_config_raw)
     dataset_cfg_local = data_config[dataset_name]
@@ -196,12 +212,29 @@ def train_one_fold(
         model_name,
         num_c=dataset_cfg_local["num_c"],
         num_q=dataset_cfg_local["num_q"],
-        emb_type=emb_type,
+        emb_type=resolved_emb_type,
         seq_len=train_cfg_local.get("seq_len"),
+        device=device,
+        dpath=dataset_cfg_local.get("dpath", ""),
+        num_at=model_cfg_local.get("num_at"),
+        num_it=model_cfg_local.get("num_it"),
         **model_kwargs,
     ).to(device)
 
+    # Apply weight init for specific models (same as pykt)
+    if model_name == "hawkes":
+        model.apply(model.init_weights)
+        model = model.double()
+
+    # Resolve timestamp loading before any run overview/logging.
+    model_use_timestamps = model_cfg_local.get("use_timestamps", False)
+    use_timestamps = bool(train_cfg_local.get("use_timestamps", False) or model_use_timestamps)
+    train_cfg_local["use_timestamps"] = use_timestamps
+
     print_run_overview(device, model, model_cfg_local, dataset_cfg_local, train_cfg_local)
+
+    # Get dataset_mode from overrides (if specified)
+    dataset_mode = train_cfg_local.get("dataset_mode")
 
     train_loader, valid_loader = build_dataset(
         "kt_default",
@@ -209,7 +242,29 @@ def train_one_fold(
         data_config=data_config,
         fold=fold_id,
         batch_size=train_cfg_local["batch_size"],
+        model_name=model_name,
+        dataset_mode=dataset_mode,
+        use_timestamps=use_timestamps,
     )
+
+    # Build test dataloader if data exists
+    test_loader = None
+    test_path = os.path.join(dataset_cfg_local["dpath"], dataset_cfg_local.get("test_file_quelevel", dataset_cfg_local.get("test_file", "")))
+    if os.path.exists(dataset_cfg_local["dpath"]) and dataset_cfg_local.get("test_file"):
+        try:
+            test_loader = build_dataset(
+                "kt_test",
+                dataset_name=dataset_name,
+                data_config=data_config,
+                batch_size=train_cfg_local["batch_size"],
+                model_name=model_name,
+                dataset_mode=dataset_mode,
+                use_timestamps=use_timestamps,
+            )
+            print(f"Test loader built from: {test_path}")
+        except Exception as e:
+            print(f"Warning: Could not build test loader: {e}")
+            test_loader = None
 
     opt = build_optimizer(train_cfg_local, model_cfg_local, model)
 
@@ -227,7 +282,7 @@ def train_one_fold(
         "device": device,
         "dataset_name": dataset_name,
         "model_name": model_name,
-        "emb_type": emb_type,
+        "emb_type": resolved_emb_type,
         "fold": fold_id,
         "seed": seed,
         "use_wandb": bool(wandb_cfg),
@@ -263,29 +318,45 @@ def train_one_fold(
         model_cfg_local,
         cv_run_name,
         ckpt_dir,
-        emb_type,
+        resolved_emb_type,
     )
 
-    trainer = build_trainer(
-        model_name,
-        model=model,
-        train_loader=train_loader,
-        valid_loader=valid_loader,
-        optimizer=opt,
-        num_epochs=train_cfg_local["num_epochs"],
-        device=device,
-        hooks=hooks,
-    )
+    trainer_kwargs = {
+        "model": model,
+        "train_loader": train_loader,
+        "valid_loader": valid_loader,
+        "optimizer": opt,
+        "num_epochs": train_cfg_local["num_epochs"],
+        "device": device,
+        "hooks": hooks,
+        "other_config": model_cfg_local,
+        "test_loader": test_loader,
+    }
+    if "patience" in train_cfg_local:
+        trainer_kwargs["patience"] = train_cfg_local["patience"]
+
+    trainer = build_trainer(model_name, **trainer_kwargs)
     trainer.run()
+
+    # Evaluate on test set if available
+    test_metrics = None
+    if test_loader is not None:
+        test_metrics = trainer.evaluate_test()
+        if test_metrics:
+            print(f"Test results: AUC={test_metrics.get('test_auc', -1):.4f}, ACC={test_metrics.get('test_acc', -1):.4f}")
 
     best_metrics = getattr(trainer, "best_metrics", None)
     if best_metrics is not None:
+        # Merge test metrics into best_metrics if available
+        if test_metrics:
+            best_metrics.update(test_metrics)
         save_run_config(os.path.join(ckpt_dir, "best_metrics.json"), best_metrics)
 
     return {
         "fold": fold_id,
         "run_name": run_name,
         "ckpt_dir": ckpt_dir,
+        "emb_type": resolved_emb_type,
         "best_metrics": best_metrics,
         "best_path": getattr(trainer, "best_path", None),
     }

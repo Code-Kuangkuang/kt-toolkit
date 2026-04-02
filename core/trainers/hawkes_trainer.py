@@ -7,8 +7,8 @@ from core.registry import TRAINER_REGISTRY
 from core.trainer import BaseTrainer
 
 
-@TRAINER_REGISTRY.register("sakt")
-class SAKTTrainer(BaseTrainer):
+@TRAINER_REGISTRY.register("hawkes")
+class HawkesTrainer(BaseTrainer):
     def __init__(
         self,
         model,
@@ -96,27 +96,54 @@ class SAKTTrainer(BaseTrainer):
         return (epoch - self.best_epoch) >= self.patience
 
     def _forward_batch(self, batch):
-        qseqs = batch.get("qseqs")
-        cseqs = batch.get("cseqs")
-        rseqs = batch["rseqs"].to(self.device).long()
-        qshft = batch.get("shft_qseqs")
+        # Hawkes needs: skills, problems, times, labels
+        cseqs = batch.get("cseqs")  # skills
+        qseqs = batch.get("qseqs")  # problems
+        rseqs = batch["rseqs"].to(self.device)  # labels/responses
+        tseqs = batch.get("tseqs")  # timestamps
         cshft = batch.get("shft_cseqs")
-        rshft = batch["shft_rseqs"].to(self.device).float()
+        qshft = batch.get("shft_qseqs")
+        rshft = batch["shft_rseqs"].to(self.device)
+        tshft = batch.get("shft_tseqs")
         sm = batch["smasks"].to(self.device)
 
-        base_seqs = cseqs if cseqs is not None and cseqs.numel() > 0 else qseqs
-        base_shft = cshft if cshft is not None and cshft.numel() > 0 else qshft
-        if base_seqs is None or base_seqs.numel() == 0:
-            raise ValueError("SAKTTrainer requires question or concept sequences.")
+        # Move to device
+        if cseqs is not None:
+            cseqs = cseqs.to(self.device)
+        if qseqs is not None:
+            qseqs = qseqs.to(self.device)
+        if tseqs is not None:
+            tseqs = tseqs.to(self.device)
+        if cshft is not None:
+            cshft = cshft.to(self.device)
+        if qshft is not None:
+            qshft = qshft.to(self.device)
+        if tshft is not None:
+            tshft = tshft.to(self.device)
 
-        base_seqs = base_seqs.to(self.device).long()
-        base_shft = base_shft.to(self.device).long()
+        # Build full sequences (prepend first element) - same as pykt
+        skills = torch.cat((cseqs[:, 0:1], cshft), dim=1) if cseqs is not None else None
+        problems = torch.cat((qseqs[:, 0:1], qshft), dim=1) if qseqs is not None else None
+        times = torch.cat((tseqs[:, 0:1], tshft), dim=1) if tseqs is not None else None
+        labels = torch.cat((rseqs[:, 0:1], rshft), dim=1)
 
-        preds = self.model(base_seqs, rseqs, base_shft)
+        # Forward
+        predictions = self.model(skills, problems, times, labels)
 
-        loss = cal_loss(self.model, [preds], rseqs, rshft, sm)
-        pred = torch.masked_select(preds, sm)
+        # Use predictions from position 1 onwards (same as pykt: y[:, 1:])
+        predictions = predictions[:, 1:]
+
+        # Compute loss with clamping to avoid extreme values
+        pred = torch.masked_select(predictions, sm)
         target = torch.masked_select(rshft, sm)
+        # Clamp predictions to avoid extreme BCE values (same as pykt behavior)
+        pred_clamped = pred.clamp(min=1e-7, max=1 - 1e-7)
+        loss = binary_cross_entropy(pred_clamped.double(), target.double())
+
+        # Debug: show loss per element
+        # element_loss = -target * torch.log(pred + 1e-10) - (1-target) * torch.log(1-pred + 1e-10)
+        # print(f"Element loss stats: mean={element_loss.mean():.4f}, max={element_loss.max():.4f}")
+
         return pred, target, loss
 
     def evaluate_test(self):
@@ -147,10 +174,3 @@ class SAKTTrainer(BaseTrainer):
         prelabels = [1 if p >= 0.5 else 0 for p in ps]
         acc = metrics.accuracy_score(ts, prelabels)
         return {"test_auc": auc, "test_acc": acc}
-
-
-def cal_loss(model, ys, r, rshft, sm, preloss=None):
-    y = torch.masked_select(ys[0], sm)
-    t = torch.masked_select(rshft, sm)
-    loss = binary_cross_entropy(y.double(), t.double())
-    return loss

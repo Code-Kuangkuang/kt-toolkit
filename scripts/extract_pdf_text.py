@@ -27,7 +27,7 @@ def extract_pdf_text(pdf_path: Path, out_path: Optional[Path] = None) -> tuple[i
     content = "".join(parts)
     output = out_path if out_path is not None else pdf_path.with_suffix(".txt")
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(content, encoding="utf-8")
+    output.write_text(content, encoding="utf-8", errors="replace")
 
     return len(reader.pages), len(content), output
 

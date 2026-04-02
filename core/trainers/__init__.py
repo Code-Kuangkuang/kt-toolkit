@@ -3,3 +3,11 @@ from .dkt_plus_trainer import DKTPlusTrainer  # noqa: F401
 from .dkvmn_trainer import DKVMNTrainer  # noqa: F401
 from .akt_trainer import AKTTrainer  # noqa: F401
 from .sakt_trainer import SAKTTrainer  # noqa: F401
+from .qikt_trainer import QIKTTrainer  # noqa: F401
+from .gkt_trainer import GKTTrainer  # noqa: F401
+from .kqn_trainer import KQNTrainer  # noqa: F401
+from .atkt_trainer import ATKTTrainer  # noqa: F401
+from .iekt_trainer import IEKTTrainer  # noqa: F401
+from .hawkes_trainer import HawkesTrainer  # noqa: F401
+from .lpkt_trainer import LPKTTrainer  # noqa: F401
+from .deep_irt_trainer import DeepIRTTrainer  # noqa: F401

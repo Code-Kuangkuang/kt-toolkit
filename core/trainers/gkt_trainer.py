@@ -7,8 +7,8 @@ from core.registry import TRAINER_REGISTRY
 from core.trainer import BaseTrainer
 
 
-@TRAINER_REGISTRY.register("sakt")
-class SAKTTrainer(BaseTrainer):
+@TRAINER_REGISTRY.register("gkt")
+class GKTTrainer(BaseTrainer):
     def __init__(
         self,
         model,
@@ -104,17 +104,31 @@ class SAKTTrainer(BaseTrainer):
         rshft = batch["shft_rseqs"].to(self.device).float()
         sm = batch["smasks"].to(self.device)
 
-        base_seqs = cseqs if cseqs is not None and cseqs.numel() > 0 else qseqs
-        base_shft = cshft if cshft is not None and cshft.numel() > 0 else qshft
-        if base_seqs is None or base_seqs.numel() == 0:
-            raise ValueError("SAKTTrainer requires question or concept sequences.")
+        masks = batch.get("masks")
 
-        base_seqs = base_seqs.to(self.device).long()
-        base_shft = base_shft.to(self.device).long()
+        # IMPORTANT: GKT expects concept/skill ids in range [0, num_c-1].
+        # Using question ids (qseqs) will create out-of-range interaction indices (q*2+r) and crash on CUDA.
+        if cseqs is None or cseqs.numel() == 0:
+            raise ValueError("GKTTrainer requires concept sequences (cseqs).")
 
-        preds = self.model(base_seqs, rseqs, base_shft)
+        base_seqs = cseqs.to(self.device).long()
+        if masks is not None and masks.numel() > 0:
+            base_seqs = base_seqs.masked_fill(~masks.to(self.device), -1)
 
+        # Forward through GKT model
+        preds = self.model(base_seqs, rseqs)
+
+        # GKT returns next-step predictions of length (T-1) for input length T.
+        # Our dataset batches already use shifted sequences of length T, so we
+        # need to align everything to the common valid length.
+        common_len = min(preds.size(1), rshft.size(1), sm.size(1))
+        preds = preds[:, :common_len]
+        rshft = rshft[:, :common_len]
+        sm = sm[:, :common_len]
+
+        # Compute loss
         loss = cal_loss(self.model, [preds], rseqs, rshft, sm)
+
         pred = torch.masked_select(preds, sm)
         target = torch.masked_select(rshft, sm)
         return pred, target, loss

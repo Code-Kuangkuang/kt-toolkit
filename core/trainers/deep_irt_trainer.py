@@ -7,8 +7,8 @@ from core.registry import TRAINER_REGISTRY
 from core.trainer import BaseTrainer
 
 
-@TRAINER_REGISTRY.register("sakt")
-class SAKTTrainer(BaseTrainer):
+@TRAINER_REGISTRY.register("deep_irt")
+class DeepIRTTrainer(BaseTrainer):
     def __init__(
         self,
         model,
@@ -48,10 +48,8 @@ class SAKTTrainer(BaseTrainer):
             self.optimizer.step()
             losses.append(loss.item())
 
-            # Progress bar
             self._print_progress(batch_idx, total_batches, loss.item())
 
-        # Show final
         if losses:
             bar = "█" * 25
             print(f"  │{bar}│ 100% | Loss: {losses[-1]:.4f}")
@@ -98,29 +96,54 @@ class SAKTTrainer(BaseTrainer):
     def _forward_batch(self, batch):
         qseqs = batch.get("qseqs")
         cseqs = batch.get("cseqs")
-        rseqs = batch["rseqs"].to(self.device).long()
+        rseqs = batch["rseqs"]
         qshft = batch.get("shft_qseqs")
         cshft = batch.get("shft_cseqs")
-        rshft = batch["shft_rseqs"].to(self.device).float()
-        sm = batch["smasks"].to(self.device)
+        rshft = batch["shft_rseqs"]
+        sm = batch["smasks"]
+        masks = batch.get("masks")
 
-        base_seqs = cseqs if cseqs is not None and cseqs.numel() > 0 else qseqs
-        base_shft = cshft if cshft is not None and cshft.numel() > 0 else qshft
-        if base_seqs is None or base_seqs.numel() == 0:
-            raise ValueError("SAKTTrainer requires question or concept sequences.")
+        if qseqs is not None:
+            qseqs = qseqs.to(self.device)
+        if cseqs is not None:
+            cseqs = cseqs.to(self.device)
+        if rseqs is not None:
+            rseqs = rseqs.to(self.device)
+        if qshft is not None:
+            qshft = qshft.to(self.device)
+        if cshft is not None:
+            cshft = cshft.to(self.device)
+        if rshft is not None:
+            rshft = rshft.to(self.device)
+        if sm is not None:
+            sm = sm.to(self.device)
+        if masks is not None:
+            masks = masks.to(self.device)
 
-        base_seqs = base_seqs.to(self.device).long()
-        base_shft = base_shft.to(self.device).long()
+        data = {
+            "qseqs": qseqs,
+            "cseqs": cseqs,
+            "rseqs": rseqs,
+            "shft_qseqs": qshft,
+            "shft_cseqs": cshft,
+            "shft_rseqs": rshft,
+            "masks": masks if masks is not None else torch.zeros_like(sm),
+            "smasks": sm,
+        }
 
-        preds = self.model(base_seqs, rseqs, base_shft)
+        pred = self.model(data, return_details=False)
 
-        loss = cal_loss(self.model, [preds], rseqs, rshft, sm)
-        pred = torch.masked_select(preds, sm)
-        target = torch.masked_select(rshft, sm)
+        target = rshft
+
+        # Mask padding
+        pred = torch.masked_select(pred, sm)
+        target = torch.masked_select(target, sm)
+
+        loss = binary_cross_entropy(pred, target)
+
         return pred, target, loss
 
     def evaluate_test(self):
-        """Evaluate model on test set."""
         if self.test_loader is None:
             return {"test_auc": -1, "test_acc": -1}
 
@@ -147,10 +170,3 @@ class SAKTTrainer(BaseTrainer):
         prelabels = [1 if p >= 0.5 else 0 for p in ps]
         acc = metrics.accuracy_score(ts, prelabels)
         return {"test_auc": auc, "test_acc": acc}
-
-
-def cal_loss(model, ys, r, rshft, sm, preloss=None):
-    y = torch.masked_select(ys[0], sm)
-    t = torch.masked_select(rshft, sm)
-    loss = binary_cross_entropy(y.double(), t.double())
-    return loss

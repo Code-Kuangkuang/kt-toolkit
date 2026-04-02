@@ -7,8 +7,8 @@ from core.registry import TRAINER_REGISTRY
 from core.trainer import BaseTrainer
 
 
-@TRAINER_REGISTRY.register("sakt")
-class SAKTTrainer(BaseTrainer):
+@TRAINER_REGISTRY.register("atkt")
+class ATKTTrainer(BaseTrainer):
     def __init__(
         self,
         model,
@@ -96,25 +96,31 @@ class SAKTTrainer(BaseTrainer):
         return (epoch - self.best_epoch) >= self.patience
 
     def _forward_batch(self, batch):
-        qseqs = batch.get("qseqs")
         cseqs = batch.get("cseqs")
         rseqs = batch["rseqs"].to(self.device).long()
-        qshft = batch.get("shft_qseqs")
         cshft = batch.get("shft_cseqs")
         rshft = batch["shft_rseqs"].to(self.device).float()
         sm = batch["smasks"].to(self.device)
 
-        base_seqs = cseqs if cseqs is not None and cseqs.numel() > 0 else qseqs
-        base_shft = cshft if cshft is not None and cshft.numel() > 0 else qshft
-        if base_seqs is None or base_seqs.numel() == 0:
-            raise ValueError("SAKTTrainer requires question or concept sequences.")
+        if cseqs is None or cseqs.numel() == 0:
+            raise ValueError("ATKTTrainer requires concept sequences.")
 
-        base_seqs = base_seqs.to(self.device).long()
-        base_shft = base_shft.to(self.device).long()
+        cseqs = cseqs.to(self.device).long()
+        if cshft is not None:
+            cshft = cshft.to(self.device).long()
 
-        preds = self.model(base_seqs, rseqs, base_shft)
+        # Forward through ATKT model
+        preds, _ = self.model(cseqs, rseqs)
 
+        # Shape: [batch, seq_len, num_c] -> gather by cshft
+        if cshft is not None:
+            preds = preds.gather(-1, cshft.unsqueeze(-1)).squeeze(-1)
+        else:
+            preds = preds.gather(-1, cseqs.unsqueeze(-1)).squeeze(-1)
+
+        # Compute loss
         loss = cal_loss(self.model, [preds], rseqs, rshft, sm)
+
         pred = torch.masked_select(preds, sm)
         target = torch.masked_select(rshft, sm)
         return pred, target, loss
