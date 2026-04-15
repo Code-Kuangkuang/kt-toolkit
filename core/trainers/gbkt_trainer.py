@@ -1,15 +1,14 @@
-import sys
 import numpy as np
 import torch
 from sklearn import metrics
-from torch.nn.functional import binary_cross_entropy
+from torch.nn.functional import binary_cross_entropy, mse_loss
 
 from core.registry import TRAINER_REGISTRY
 from core.trainer import BaseTrainer
 
 
-@TRAINER_REGISTRY.register("iekt")
-class IEKTTrainer(BaseTrainer):
+@TRAINER_REGISTRY.register("gbkt")
+class GBKTTrainer(BaseTrainer):
     def __init__(
         self,
         model,
@@ -36,6 +35,30 @@ class IEKTTrainer(BaseTrainer):
         self.patience = patience
         self.other_config = other_config
 
+        # LR schedule: linear warmup then cosine decay.
+        warmup_epochs = int(other_config.get("warmup_epochs", 3))
+        use_scheduler = bool(other_config.get("use_scheduler", True))
+        self.scheduler = None
+        if use_scheduler:
+            from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+
+            warmup = LinearLR(
+                optimizer,
+                start_factor=0.1,
+                end_factor=1.0,
+                total_iters=warmup_epochs,
+            )
+            cosine = CosineAnnealingLR(
+                optimizer,
+                T_max=max(num_epochs - warmup_epochs, 1),
+                eta_min=1e-6,
+            )
+            self.scheduler = SequentialLR(
+                optimizer,
+                schedulers=[warmup, cosine],
+                milestones=[warmup_epochs],
+            )
+
     def _train_epoch(self, epoch):
         self.model.train()
         losses = []
@@ -50,16 +73,18 @@ class IEKTTrainer(BaseTrainer):
                 continue
             self.optimizer.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             self.optimizer.step()
             losses.append(loss.item())
-
-            # Progress bar
             self._print_progress(batch_idx, total_batches, loss.item())
 
-        # Ensure 100% is shown at the end
         if losses:
             bar = "█" * 25
             print(f"  │{bar}│ 100% | Loss: {losses[-1]:.4f}")
+
+        if self.scheduler is not None:
+            self.scheduler.step()
+
         return float(np.mean(losses)) if losses else 0.0
 
     def _eval_epoch(self, epoch):
@@ -91,7 +116,7 @@ class IEKTTrainer(BaseTrainer):
         metric = metrics_dict.get(self.metric_key, None)
         if metric is None:
             return False
-        if self.best_metric is None or metric > self.best_metric + 1e-3:
+        if self.best_metric is None or metric > self.best_metric + 1e-4:
             self.best_metric = metric
             self.best_epoch = epoch
             return False
@@ -99,8 +124,13 @@ class IEKTTrainer(BaseTrainer):
             return False
         return (epoch - self.best_epoch) >= self.patience
 
+    @staticmethod
+    def _concat_full(seqs, shft):
+        if seqs is None or seqs.numel() == 0:
+            return None
+        return torch.cat((seqs[:, :1], shft), dim=1)
+
     def _forward_batch(self, batch):
-        # Prepare data
         qseqs = batch.get("qseqs")
         cseqs = batch.get("cseqs")
         rseqs = batch["rseqs"]
@@ -108,9 +138,7 @@ class IEKTTrainer(BaseTrainer):
         cshft = batch.get("shft_cseqs")
         rshft = batch["shft_rseqs"]
         sm = batch["smasks"]
-        masks = batch.get("masks")
 
-        # Move to device
         if qseqs is not None:
             qseqs = qseqs.to(self.device)
         if cseqs is not None:
@@ -125,33 +153,72 @@ class IEKTTrainer(BaseTrainer):
             rshft = rshft.to(self.device)
         if sm is not None:
             sm = sm.to(self.device)
-        if masks is not None:
-            masks = masks.to(self.device)
 
-        # Build data dict for IEKT model
-        data = {
-            "qseqs": qseqs,
-            "cseqs": cseqs,
-            "rseqs": rseqs,
-            "shft_qseqs": qshft,
-            "shft_cseqs": cshft,
-            "shft_rseqs": rshft,
-            "masks": masks if masks is not None else torch.zeros_like(sm),
-            "smasks": sm,
-        }
+        q_full = self._concat_full(qseqs, qshft)
+        c_full = self._concat_full(cseqs, cshft)
+        r_full = self._concat_full(rseqs, rshft)
 
-        # Forward through model
-        pred, target, loss = self.model.train_one_step(data, process=True)
+        if q_full is None or c_full is None:
+            raise ValueError("GBKTTrainer requires both question and concept sequences.")
 
-        # Some implementations return [B, T] logits, while IEKT currently
-        # returns flattened valid positions; only mask in the matrix case.
-        if pred.dim() > 1:
-            pred = torch.masked_select(pred, sm)
-            target = torch.masked_select(target, sm)
+        outputs = self.model(q_full.long(), c_full.long(), r_full.float())
+        y = outputs["y"]
+        theta = outputs["theta"]
+        conf = outputs["confidence"]
+        r_h_mean = outputs["r_h_mean"]
+        r_d_mean = outputs["r_d_mean"]
+
+        common_len = min(y.size(1), rshft.size(1), sm.size(1))
+        if common_len <= 0:
+            empty = torch.empty(0, device=self.device)
+            return empty, empty, torch.tensor(0.0, device=self.device)
+
+        y = y[:, :common_len]
+        theta = theta[:, :common_len]
+        conf = conf[:, :common_len]
+        r_h_mean = r_h_mean[:, :common_len]
+        r_d_mean = r_d_mean[:, :common_len]
+        rshft = rshft[:, :common_len]
+        sm = sm[:, :common_len]
+
+        pred = torch.masked_select(y, sm)
+        target = torch.masked_select(rshft, sm)
+        if pred.numel() == 0:
+            return pred, target, torch.tensor(0.0, device=self.device)
+        target = target.float()
+
+        loss_pred = binary_cross_entropy(pred, target)
+
+        theta_prob = torch.sigmoid(theta)
+        theta_pred = torch.masked_select(theta_prob, sm)
+        loss_theta = (
+            binary_cross_entropy(theta_pred, target)
+            if theta_pred.numel() > 0
+            else torch.tensor(0.0, device=self.device)
+        )
+
+        rh = torch.masked_select(r_h_mean, sm)
+        rd = torch.masked_select(r_d_mean, sm)
+        loss_radius = torch.tensor(0.0, device=self.device)
+        if rh.numel() > 0 and rd.numel() > 0:
+            # Log-barrier keeps radius away from collapse while avoiding strong shrinkage.
+            loss_radius = -(torch.log(rh + 1e-6).mean() + torch.log(rd + 1e-6).mean())
+
+        conf_sel = torch.masked_select(conf, sm)
+        loss_conf = torch.tensor(0.0, device=self.device)
+        if conf_sel.numel() > 0:
+            pred_error = torch.abs(pred.detach() - target)
+            conf_target = (1.0 - pred_error).clamp(min=0.0, max=1.0)
+            loss_conf = mse_loss(conf_sel.float(), conf_target.float())
+
+        lambda_theta = float(self.other_config.get("lambda_theta", 0.3))
+        lambda_radius = float(self.other_config.get("lambda_radius", 0.001))
+        lambda_conf = float(self.other_config.get("lambda_conf", 0.05))
+
+        loss = loss_pred + lambda_theta * loss_theta + lambda_radius * loss_radius + lambda_conf * loss_conf
         return pred, target, loss
 
     def evaluate_test(self):
-        """Evaluate model on test set."""
         if self.test_loader is None:
             return {"test_auc": -1, "test_acc": -1}
 

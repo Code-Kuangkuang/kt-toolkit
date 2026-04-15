@@ -1,6 +1,6 @@
-dataset_name: algebra2005
-raw_path: data/algebra2005/algebra_2005_2006_train.txt
-dpath: data/algebra2005
+dataset_name: junyi2015
+raw_path: data/junyi2015/junyi_ProblemLog_original.csv
+dpath: data/junyi2015
 configf: configs/data_config.json
 
 min_seq_len: 3

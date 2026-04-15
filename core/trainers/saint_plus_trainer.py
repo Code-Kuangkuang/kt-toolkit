@@ -7,8 +7,8 @@ from core.registry import TRAINER_REGISTRY
 from core.trainer import BaseTrainer
 
 
-@TRAINER_REGISTRY.register("dkt")
-class DKTTrainer(BaseTrainer):
+@TRAINER_REGISTRY.register("saint_plus")
+class SAINTpTrainer(BaseTrainer):
     def __init__(
         self,
         model,
@@ -48,10 +48,8 @@ class DKTTrainer(BaseTrainer):
             self.optimizer.step()
             losses.append(loss.item())
 
-            # Progress bar
             self._print_progress(batch_idx, total_batches, loss.item())
 
-        # Show final
         if losses:
             bar = "█" * 25
             print(f"  │{bar}│ 100% | Loss: {losses[-1]:.4f}")
@@ -98,55 +96,53 @@ class DKTTrainer(BaseTrainer):
     def _forward_batch(self, batch):
         qseqs = batch.get("qseqs")
         cseqs = batch.get("cseqs")
+        rseqs = batch["rseqs"]
         qshft = batch.get("shft_qseqs")
         cshft = batch.get("shft_cseqs")
+        rshft = batch["shft_rseqs"]
+        sm = batch["smasks"]
+        masks = batch.get("masks")
 
-        if qseqs is not None and qseqs.numel() > 0:
-            qseqs = qseqs.to(self.device).long()
-        if cseqs is not None and cseqs.numel() > 0:
-            cseqs = cseqs.to(self.device).long()
-        if qshft is not None and qshft.numel() > 0:
-            qshft = qshft.to(self.device).long()
-        if cshft is not None and cshft.numel() > 0:
-            cshft = cshft.to(self.device).long()
+        if qseqs is not None:
+            qseqs = qseqs.to(self.device)
+        if cseqs is not None:
+            cseqs = cseqs.to(self.device)
+        if rseqs is not None:
+            rseqs = rseqs.to(self.device)
+        if qshft is not None:
+            qshft = qshft.to(self.device)
+        if cshft is not None:
+            cshft = cshft.to(self.device)
+        if rshft is not None:
+            rshft = rshft.to(self.device)
+        if sm is not None:
+            sm = sm.to(self.device)
+        if masks is not None:
+            masks = masks.to(self.device)
 
-        rseqs = batch["rseqs"].to(self.device).long()
-        rshft = batch["shft_rseqs"].to(self.device).float()
-        sm = batch["smasks"].to(self.device)
+        data = {
+            "qseqs": qseqs,
+            "cseqs": cseqs,
+            "rseqs": rseqs,
+            "shft_qseqs": qshft,
+            "shft_cseqs": cshft,
+            "shft_rseqs": rshft,
+            "masks": masks if masks is not None else torch.zeros_like(sm),
+            "smasks": sm,
+        }
 
-        if cseqs is not None and cseqs.numel() > 0:
-            base_seqs = cseqs
-        elif qseqs is not None and qseqs.numel() > 0:
-            base_seqs = qseqs
-        else:
-            raise ValueError("DKTTrainer requires qseqs or cseqs.")
+        pred = self.model(data, return_details=False)
 
-        if cshft is not None and cshft.numel() > 0:
-            target_idx = cshft
-        elif qshft is not None and qshft.numel() > 0:
-            target_idx = qshft
-        else:
-            raise ValueError("DKTTrainer requires shft_cseqs or shft_qseqs.")
+        target = rshft
 
-        y = self.model(base_seqs, rseqs)
+        pred = torch.masked_select(pred, sm)
+        target = torch.masked_select(target, sm)
 
-        max_target = int(target_idx.max().item()) if target_idx.numel() > 0 else -1
-        if max_target >= y.size(-1):
-            raise ValueError(
-                f"DKT target id {max_target} exceeds output dim {y.size(-1)}. "
-                "Please provide compatible shft_cseqs/shft_qseqs for current model output."
-            )
+        loss = binary_cross_entropy(pred, target)
 
-        y = y.gather(-1, target_idx.unsqueeze(-1)).squeeze(-1)
-
-        loss = cal_loss(self.model, [y], rseqs, rshft, sm)
-
-        pred = torch.masked_select(y, sm)
-        target = torch.masked_select(rshft, sm)
         return pred, target, loss
 
     def evaluate_test(self):
-        """Evaluate model on test set."""
         if self.test_loader is None:
             return {"test_auc": -1, "test_acc": -1}
 
@@ -173,11 +169,3 @@ class DKTTrainer(BaseTrainer):
         prelabels = [1 if p >= 0.5 else 0 for p in ps]
         acc = metrics.accuracy_score(ts, prelabels)
         return {"test_auc": auc, "test_acc": acc}
-
-
-def cal_loss(model, ys, r, rshft, sm, preloss=None):
-    y = torch.masked_select(ys[0], sm)
-    t = torch.masked_select(rshft, sm)
-    loss = binary_cross_entropy(y.double(), t.double())
-    return loss
-

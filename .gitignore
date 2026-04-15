@@ -10,7 +10,9 @@ data/assist2017/
 data/bridge2algebra2006/
 data/ednet/
 data/junyi2015/
+data/nips_task34/
 blog/
+otherKT/
 configs/wandb.json
 __pycache__
 *.pyc

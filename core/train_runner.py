@@ -5,19 +5,39 @@ import os
 import uuid
 import statistics
 import csv
+import random
 
 import torch
+import numpy as np
 from rich import print
 
 from core.device_info import get_device_info
 from core.factory import build_dataset, build_model, build_trainer
 from core.hooks import BestMetricsHook, SaveBestHook, WandbHook
+from strategies import apply_dkt_pebg_strategy
 
 
 def set_seed(seed):
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+    """Set the global random seed.
+
+    Args:
+        seed (int): random seed
+    """
+    try:
+        import torch
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+    except Exception as e:
+        print("Set seed failed,details are ", e)
+        pass
+    np.random.seed(seed)
+    random.seed(seed)
+    # cuda env
+    os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"
 
 
 def save_run_config(path, payload):
@@ -190,13 +210,6 @@ def train_one_fold(
     if train_cfg_local.get("patience") == -1:
         train_cfg_local["patience"] = None
 
-    # Filter out learning_rate and other_config parameters for model
-    other_config_keys = {"loss_c_all_lambda", "loss_q_all_lambda", "loss_c_next_lambda", "loss_q_next_lambda",
-                         "output_mode", "output_c_all_lambda", "output_c_next_lambda", "output_q_all_lambda",
-                         "output_q_next_lambda", "emb_type", "learning_rate", "use_timestamps", "dpath",
-                         "num_at", "num_it"}
-    model_kwargs = {k: v for k, v in model_cfg_local.items() if k not in other_config_keys}
-
     data_config = copy.deepcopy(data_config_raw)
     dataset_cfg_local = data_config[dataset_name]
     if "dpath" in dataset_cfg_local:
@@ -204,6 +217,29 @@ def train_one_fold(
         if not os.path.isabs(dpath):
             dpath = os.path.join(root_dir, dpath)
         dataset_cfg_local["dpath"] = os.path.normpath(dpath)
+
+    booster_info = None
+    if model_name == "dkt_pebg":
+        model_cfg_local, booster_info = apply_dkt_pebg_strategy(
+            model_cfg=model_cfg_local,
+            dataset_name=dataset_name,
+            dataset_cfg=dataset_cfg_local,
+            root_dir=root_dir,
+            fold_id=fold_id,
+        )
+        print(
+            "DKT-PEBG booster strategy resolved: "
+            f"strategy={booster_info.get('strategy')} "
+            f"enabled={booster_info.get('enabled')} "
+            f"emb_path={booster_info.get('emb_path', '')}"
+        )
+
+    # Filter out learning_rate and other_config parameters for model
+    other_config_keys = {"loss_c_all_lambda", "loss_q_all_lambda", "loss_c_next_lambda", "loss_q_next_lambda",
+                         "output_mode", "output_c_all_lambda", "output_c_next_lambda", "output_q_all_lambda",
+                         "output_q_next_lambda", "emb_type", "learning_rate", "use_timestamps", "dpath",
+                         "num_at", "num_it", "booster_strategy", "require_fold_embedding"}
+    model_kwargs = {k: v for k, v in model_cfg_local.items() if k not in other_config_keys}
 
     set_seed(seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -299,6 +335,7 @@ def train_one_fold(
         "train_config": train_cfg_local,
         "model_config": model_cfg_local,
         "dataset_config": dataset_cfg_local,
+        "booster_info": booster_info,
         "wandb": {
             "enabled": bool(wandb_cfg),
             "project": wandb_cfg.get("project") if wandb_cfg else None,

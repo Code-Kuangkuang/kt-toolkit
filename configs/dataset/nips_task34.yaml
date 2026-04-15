@@ -1,6 +1,6 @@
-dataset_name: algebra2005
-raw_path: data/algebra2005/algebra_2005_2006_train.txt
-dpath: data/algebra2005
+dataset_name: nips_task34
+raw_path: data/nips_task34/train_task_3_4.csv
+dpath: data/nips_task34
 configf: configs/data_config.json
 
 min_seq_len: 3

@@ -1,5 +1,6 @@
 import os
 import sys
+import csv
 import pandas as pd
 import numpy as np
 import json
@@ -207,6 +208,179 @@ def save_dcur(row, effective_keys):
         else:
             dcur[key] = row[key]
     return dcur
+
+
+def ordered_save_columns(save_keys):
+    key_set = set(save_keys)
+    return [key for key in ALL_KEYS if key in key_set]
+
+
+def _init_stream_stats():
+    return {
+        "allin": 0,
+        "allselect": 0,
+        "allqs": set(),
+        "allcs": set(),
+        "seqnum": 0,
+    }
+
+
+def _update_stream_stats(stats, row):
+    rs = str(row.get("responses", ""))
+    if rs:
+        rs_list = rs.split(",")
+        stats["allin"] += len(rs_list) - rs_list.count("-1")
+
+    ss = str(row.get("selectmasks", ""))
+    if ss:
+        stats["allselect"] += ss.split(",").count("1")
+
+    qs = str(row.get("questions", ""))
+    if qs:
+        stats["allqs"] |= (set(qs.split(",")) - {"", "-1"})
+
+    cs = str(row.get("concepts", ""))
+    if cs:
+        curcs = set()
+        for c in cs.split(","):
+            if c in {"", "-1"}:
+                continue
+            curcs |= (set(c.split("_")) - {"", "-1"})
+        stats["allcs"] |= curcs
+
+    stats["seqnum"] += 1
+
+
+def _finalize_stream_stats(stats, stats_key, stares):
+    allin = stats["allin"]
+    allselect = stats["allselect"]
+    seqnum = stats["seqnum"]
+    qs = len(stats["allqs"])
+    cs = len(stats["allcs"])
+    stares.append(",".join([str(s) for s in [stats_key, allin, seqnum, allselect]]))
+    return allin, allselect, qs, cs, seqnum
+
+
+def write_rows_stream(rows, save_keys, write_path, stats_key, stares):
+    columns = ordered_save_columns(save_keys)
+    stats = _init_stream_stats()
+
+    with open(write_path, "w", encoding="utf8", newline="") as fout:
+        writer = csv.DictWriter(fout, fieldnames=columns)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: row.get(key, "") for key in columns})
+            _update_stream_stats(stats, row)
+
+    return _finalize_stream_stats(stats, stats_key, stares)
+
+
+def iter_window_sequence_rows(df, effective_keys, maxlen=200, pad_val=-1):
+    for _, row in df.iterrows():
+        dcur = save_dcur(row, effective_keys)
+        lenrs = len(dcur["responses"])
+
+        if lenrs > maxlen:
+            out = dict()
+            for key in effective_keys:
+                if key in ONE_KEYS:
+                    out[key] = dcur[key]
+                else:
+                    out[key] = ",".join([str(k) for k in dcur[key][0:maxlen]])
+            out["selectmasks"] = ",".join(["1"] * maxlen)
+            yield out
+
+            for j in range(maxlen + 1, lenrs + 1):
+                out = dict()
+                for key in effective_keys:
+                    if key in ONE_KEYS:
+                        out[key] = dcur[key]
+                    else:
+                        out[key] = ",".join([str(k) for k in dcur[key][j - maxlen: j]])
+                out["selectmasks"] = ",".join([str(pad_val)] * (maxlen - 1) + ["1"])
+                yield out
+        else:
+            pad_dim = maxlen - lenrs
+            out = dict()
+            for key in effective_keys:
+                if key in ONE_KEYS:
+                    out[key] = dcur[key]
+                else:
+                    vals = list(dcur[key][0:]) + [pad_val] * pad_dim
+                    out[key] = ",".join([str(k) for k in vals])
+            out["selectmasks"] = ",".join(["1"] * lenrs + [str(pad_val)] * pad_dim)
+            yield out
+
+
+def iter_question_sequence_rows(df, effective_keys, window=True, min_seq_len=3, maxlen=200, pad_val=-1):
+    global_qidx = -1
+    for row_idx, (_, row) in enumerate(df.iterrows()):
+        dcur = save_dcur(row, effective_keys)
+        dcur["orirow"] = [row_idx] * len(dcur["responses"])
+
+        dexpand, global_qidx = expand_question(dcur, global_qidx)
+        seq_num = len(dexpand["responses"])
+
+        for j in range(seq_num):
+            curlen = len(dexpand["responses"][j])
+            if curlen < 2:
+                continue
+
+            if curlen < maxlen:
+                pad_dim = maxlen - curlen
+                out = dict()
+                for key in dexpand:
+                    vals = list(dexpand[key][j][0:]) + [pad_val] * pad_dim
+                    out[key] = ",".join([str(k) for k in vals])
+                for key in ONE_KEYS:
+                    out[key] = dcur[key]
+                yield out
+            else:
+                if window:
+                    if dexpand["selectmasks"][j][maxlen - 1] == 1:
+                        out = dict()
+                        for key in dexpand:
+                            out[key] = ",".join([str(k) for k in dexpand[key][j][0:maxlen]])
+                        for key in ONE_KEYS:
+                            out[key] = dcur[key]
+                        yield out
+
+                    for n in range(maxlen + 1, curlen + 1):
+                        if dexpand["selectmasks"][j][n - 1] == 1:
+                            out = dict()
+                            for key in dexpand:
+                                if key == "selectmasks":
+                                    out[key] = ",".join([str(pad_val)] * (maxlen - 1) + ["1"])
+                                else:
+                                    out[key] = ",".join([str(k) for k in dexpand[key][j][n - maxlen: n]])
+                            for key in ONE_KEYS:
+                                out[key] = dcur[key]
+                            yield out
+                else:
+                    k = 0
+                    rest = curlen
+                    while curlen >= k + maxlen:
+                        rest = rest - maxlen
+                        if dexpand["selectmasks"][j][k + maxlen - 1] == 1:
+                            out = dict()
+                            for key in dexpand:
+                                out[key] = ",".join([str(s) for s in dexpand[key][j][k: k + maxlen]])
+                            for key in ONE_KEYS:
+                                out[key] = dcur[key]
+                            yield out
+                        k += maxlen
+
+                    if rest < min_seq_len:
+                        continue
+
+                    pad_dim = maxlen - rest
+                    out = dict()
+                    for key in dexpand:
+                        vals = list(dexpand[key][j][k:]) + [pad_val] * pad_dim
+                        out[key] = ",".join([str(s) for s in vals])
+                    for key in ONE_KEYS:
+                        out[key] = dcur[key]
+                    yield out
 
 
 def generate_sequences(df, effective_keys, min_seq_len=3, maxlen=200, pad_val=-1):
@@ -635,27 +809,67 @@ def main(dname, fname, dataset_name, configf, min_seq_len=3, maxlen=200, kfold=5
     print(f"test sequences interactions num: {ins}, select num: {ss}, qs: {qs}, cs: {cs}, seqnum: {seqnum}")
     print("="*20)
 
-    test_window_seqs = generate_window_sequences(test_df, list(effective_keys) + ['cidxs'], maxlen)
-    flag, test_question_seqs = generate_question_sequences(test_df, effective_keys, False, min_seq_len, maxlen)
-    flag, test_question_window_seqs = generate_question_sequences(test_df, effective_keys, True, min_seq_len, maxlen)
+    use_streaming = dataset_name == "junyi2015"
+    window_save_keys = list(effective_keys) + ["cidxs", "selectmasks"]
+    question_save_keys = list(effective_keys) + ["selectmasks", "qidxs", "rest", "orirow"]
+    flag = ("questions" in effective_keys and "concepts" in effective_keys)
+
+    if use_streaming:
+        ins, ss, qs, cs, seqnum = write_rows_stream(
+            rows=iter_window_sequence_rows(test_df, list(effective_keys) + ["cidxs"], maxlen=maxlen),
+            save_keys=window_save_keys,
+            write_path=os.path.join(dname, "test_window_sequences.csv"),
+            stats_key="test window",
+            stares=stares,
+        )
+        print(f"test window interactions num: {ins}, select num: {ss}, qs: {qs}, cs: {cs}, seqnum: {seqnum}")
+    else:
+        test_window_seqs = generate_window_sequences(test_df, list(effective_keys) + ['cidxs'], maxlen)
 
     test_df = test_df[config+['cidxs']]
 
     test_df.to_csv(os.path.join(dname, "test.csv"), index=None)
     test_seqs.to_csv(os.path.join(dname, "test_sequences.csv"), index=None)
-    test_window_seqs.to_csv(os.path.join(dname, "test_window_sequences.csv"), index=None)
 
-    ins, ss, qs, cs, seqnum = calStatistics(test_window_seqs, stares, "test window")
-    print(f"test window interactions num: {ins}, select num: {ss}, qs: {qs}, cs: {cs}, seqnum: {seqnum}")
+    if use_streaming:
+        if flag:
+            ins, ss, qs, cs, seqnum = write_rows_stream(
+                rows=iter_question_sequence_rows(
+                    test_df, list(effective_keys), window=False, min_seq_len=min_seq_len, maxlen=maxlen
+                ),
+                save_keys=question_save_keys,
+                write_path=os.path.join(dname, "test_question_sequences.csv"),
+                stats_key="test question",
+                stares=stares,
+            )
+            print(f"test question interactions num: {ins}, select num: {ss}, qs: {qs}, cs: {cs}, seqnum: {seqnum}")
 
-    if flag:
-        test_question_seqs.to_csv(os.path.join(dname, "test_question_sequences.csv"), index=None)
-        test_question_window_seqs.to_csv(os.path.join(dname, "test_question_window_sequences.csv"), index=None)
+            ins, ss, qs, cs, seqnum = write_rows_stream(
+                rows=iter_question_sequence_rows(
+                    test_df, list(effective_keys), window=True, min_seq_len=min_seq_len, maxlen=maxlen
+                ),
+                save_keys=question_save_keys,
+                write_path=os.path.join(dname, "test_question_window_sequences.csv"),
+                stats_key="test question window",
+                stares=stares,
+            )
+            print(f"test question window interactions num: {ins}, select num: {ss}, qs: {qs}, cs: {cs}, seqnum: {seqnum}")
+    else:
+        test_window_seqs.to_csv(os.path.join(dname, "test_window_sequences.csv"), index=None)
 
-        ins, ss, qs, cs, seqnum = calStatistics(test_question_seqs, stares, "test question")
-        print(f"test question interactions num: {ins}, select num: {ss}, qs: {qs}, cs: {cs}, seqnum: {seqnum}")
-        ins, ss, qs, cs, seqnum = calStatistics(test_question_window_seqs, stares, "test question window")
-        print(f"test question window interactions num: {ins}, select num: {ss}, qs: {qs}, cs: {cs}, seqnum: {seqnum}")
+        ins, ss, qs, cs, seqnum = calStatistics(test_window_seqs, stares, "test window")
+        print(f"test window interactions num: {ins}, select num: {ss}, qs: {qs}, cs: {cs}, seqnum: {seqnum}")
+
+        flag, test_question_seqs = generate_question_sequences(test_df, effective_keys, False, min_seq_len, maxlen)
+        flag, test_question_window_seqs = generate_question_sequences(test_df, effective_keys, True, min_seq_len, maxlen)
+        if flag:
+            test_question_seqs.to_csv(os.path.join(dname, "test_question_sequences.csv"), index=None)
+            test_question_window_seqs.to_csv(os.path.join(dname, "test_question_window_sequences.csv"), index=None)
+
+            ins, ss, qs, cs, seqnum = calStatistics(test_question_seqs, stares, "test question")
+            print(f"test question interactions num: {ins}, select num: {ss}, qs: {qs}, cs: {cs}, seqnum: {seqnum}")
+            ins, ss, qs, cs, seqnum = calStatistics(test_question_window_seqs, stares, "test question window")
+            print(f"test question window interactions num: {ins}, select num: {ss}, qs: {qs}, cs: {cs}, seqnum: {seqnum}")
 
     write_config(dataset_name=dataset_name, dkeyid2idx=dkeyid2idx, effective_keys=effective_keys,
                  configf=configf, dpath=dname, k=kfold, min_seq_len=min_seq_len, maxlen=maxlen, flag=flag)

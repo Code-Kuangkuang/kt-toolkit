@@ -16,11 +16,19 @@ KEYS = ["user_id", "topic", "exercise"]
 def read_data_from_csv(read_file, write_file, dq2c):
     stares = []
 
-    df = pd.read_csv(read_file)
+    required_cols = [
+        "user_id",
+        "exercise",
+        "time_done",
+        "time_taken_attempts",
+        "correct",
+        "count_attempts",
+    ]
+    df = pd.read_csv(read_file, usecols=required_cols, low_memory=False)
     df["topic"] = df["exercise"].apply(lambda q: "NANA" if q not in dq2c else dq2c[q])
     df["exercise"] = df["exercise"].apply(replace_text)
     df["topic"] = df["topic"].apply(replace_text)
-    df = df[df["topic"] != "NANA"]
+    df = df.loc[df["topic"] != "NANA"].copy()
 
     ins, us, qs, cs, avgins, avgcq, na = sta_infos(df, KEYS, stares)
     print(f"original interaction num: {ins}, user num: {us}, question num: {qs}, concept num: {cs}, avg(ins) per s: {avgins}, avg(c) per q: {avgcq}, na: {na}")

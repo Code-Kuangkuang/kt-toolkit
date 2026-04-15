@@ -1,6 +1,6 @@
-dataset_name: algebra2005
-raw_path: data/algebra2005/algebra_2005_2006_train.txt
-dpath: data/algebra2005
+dataset_name: bridge2algebra2006
+raw_path: data/bridge2algebra2006/bridge_to_algebra_2006_2007_train.txt
+dpath: data/bridge2algebra2006
 configf: configs/data_config.json
 
 min_seq_len: 3

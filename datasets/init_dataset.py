@@ -43,7 +43,7 @@ def build_dataloaders(dataset_name, data_config, fold, batch_size, model_name=No
         max_concepts = cfg.get("max_concepts", 4)
         all_folds = set(cfg["folds"])
 
-        concept_mode = "multi" if (model_name or "").lower() in {"qikt"} else "first"
+        concept_mode = "multi" if (model_name or "").lower() in {"qikt", "gbkt"} else "first"
         train_ds = KTQueDataset(
             train_valid_path, cfg["input_type"], all_folds - {fold},
             concept_num=cfg.get("num_c", 0), max_concepts=max_concepts, concept_mode=concept_mode,
@@ -110,7 +110,7 @@ def build_test_dataloaders(dataset_name, data_config, batch_size, model_name=Non
     if dataset_mode == "all_in_one":
         test_path = os.path.join(cfg["dpath"], cfg.get("test_file_quelevel", cfg["test_file"]))
         max_concepts = cfg.get("max_concepts", 4)
-        concept_mode = "multi" if (model_name or "").lower() in {"qikt"} else "first"
+        concept_mode = "multi" if (model_name or "").lower() in {"qikt", "gbkt"} else "first"
         test_ds = KTQueDataset(
             test_path, cfg["input_type"], {-1},
             concept_num=cfg.get("num_c", 0), max_concepts=max_concepts, concept_mode=concept_mode,

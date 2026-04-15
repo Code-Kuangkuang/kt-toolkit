@@ -30,13 +30,13 @@
     },
     "algebra2005": {
         "dpath": "data/algebra2005",
-        "num_q": 2174,
-        "num_c": 98,
+        "num_q": 173113,
+        "num_c": 112,
         "input_type": [
             "questions",
             "concepts"
         ],
-        "max_concepts": 4,
+        "max_concepts": 7,
         "min_seq_len": 3,
         "maxlen": 200,
         "emb_path": "",
@@ -210,7 +210,7 @@
         "test_original_file_quelevel": "test_quelevel.csv"
     },
     "junyi2015": {
-        "dpath": "../data/junyi2015",
+        "dpath": "data/junyi2015",
         "num_q": 721,
         "num_c": 39,
         "input_type": [
@@ -234,10 +234,15 @@
         "test_file": "test_sequences.csv",
         "test_window_file": "test_window_sequences.csv",
         "test_question_file": "test_question_sequences.csv",
-        "test_question_window_file": "test_question_window_sequences.csv"
+        "test_question_window_file": "test_question_window_sequences.csv",
+        "train_valid_original_file_quelevel": "train_valid_quelevel.csv",
+        "train_valid_file_quelevel": "train_valid_sequences_quelevel.csv",
+        "test_file_quelevel": "test_sequences_quelevel.csv",
+        "test_window_file_quelevel": "test_window_sequences_quelevel.csv",
+        "test_original_file_quelevel": "test_quelevel.csv"
     },
     "bridge2algebra2006": {
-        "dpath": "../data/bridge2algebra2006",
+        "dpath": "data/bridge2algebra2006",
         "num_q": 129263,
         "num_c": 493,
         "input_type": [
@@ -301,7 +306,7 @@
         "test_original_file_quelevel": "test_quelevel.csv"
     },
     "nips_task34": {
-        "dpath": "../data/nips_task34",
+        "dpath": "data/nips_task34",
         "num_q": 948,
         "num_c": 57,
         "input_type": [

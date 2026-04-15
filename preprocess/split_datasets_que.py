@@ -4,6 +4,7 @@ import numpy as np
 import json, copy
 from .split_datasets import read_data,ALL_KEYS,ONE_KEYS,extend_multi_concepts,save_dcur
 from .split_datasets import train_test_split,KFold_split,calStatistics,get_max_concepts,id_mapping,write_config
+from .split_datasets import write_rows_stream, iter_window_sequence_rows
 
 
 def generate_sequences(df, effective_keys, min_seq_len=3, maxlen = 200, pad_val = -1):
@@ -191,16 +192,28 @@ def main(dname, fname, dataset_name, configf, min_seq_len = 3, maxlen = 200, kfo
     print(f"test sequences interactions num: {ins}, select num: {ss}, qs: {qs}, cs: {cs}, seqnum: {seqnum}")
     print("="*20)
 
-    test_window_seqs = generate_window_sequences(test_df, list(effective_keys), maxlen)
+    use_streaming = dataset_name == "junyi2015"
+    if use_streaming:
+        ins, ss, qs, cs, seqnum = write_rows_stream(
+            rows=iter_window_sequence_rows(test_df, list(effective_keys), maxlen=maxlen),
+            save_keys=list(effective_keys) + ["selectmasks"],
+            write_path=os.path.join(dname, "test_window_sequences_quelevel.csv"),
+            stats_key="test window question level",
+            stares=stares,
+        )
+        print(f"test window interactions num: {ins}, select num: {ss}, qs: {qs}, cs: {cs}, seqnum: {seqnum}")
+    else:
+        test_window_seqs = generate_window_sequences(test_df, list(effective_keys), maxlen)
 
     
     test_df = test_df[df_save_keys]
     test_df.to_csv(os.path.join(dname, "test_quelevel.csv"), index=None)
     test_seqs.to_csv(os.path.join(dname, "test_sequences_quelevel.csv"), index=None)
-    test_window_seqs.to_csv(os.path.join(dname, "test_window_sequences_quelevel.csv"), index=None)
+    if not use_streaming:
+        test_window_seqs.to_csv(os.path.join(dname, "test_window_sequences_quelevel.csv"), index=None)
 
-    ins, ss, qs, cs, seqnum = calStatistics(test_window_seqs, stares, "test window question level")
-    print(f"test window interactions num: {ins}, select num: {ss}, qs: {qs}, cs: {cs}, seqnum: {seqnum}")
+        ins, ss, qs, cs, seqnum = calStatistics(test_window_seqs, stares, "test window question level")
+        print(f"test window interactions num: {ins}, select num: {ss}, qs: {qs}, cs: {cs}, seqnum: {seqnum}")
     
 
     other_config = {

@@ -1,4 +1,5 @@
 from .dkt_trainer import DKTTrainer  # noqa: F401
+from .dkt_pebg_trainer import DKTPEBGTrainer  # noqa: F401
 from .dkt_plus_trainer import DKTPlusTrainer  # noqa: F401
 from .dkvmn_trainer import DKVMNTrainer  # noqa: F401
 from .akt_trainer import AKTTrainer  # noqa: F401
@@ -11,3 +12,6 @@ from .iekt_trainer import IEKTTrainer  # noqa: F401
 from .hawkes_trainer import HawkesTrainer  # noqa: F401
 from .lpkt_trainer import LPKTTrainer  # noqa: F401
 from .deep_irt_trainer import DeepIRTTrainer  # noqa: F401
+from .saint_trainer import SAINTTrainer  # noqa: F401
+from .saint_plus_trainer import SAINTpTrainer  # noqa: F401
+from .gbkt_trainer import GBKTTrainer  # noqa: F401

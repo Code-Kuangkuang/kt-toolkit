@@ -7,8 +7,8 @@ from core.registry import TRAINER_REGISTRY
 from core.trainer import BaseTrainer
 
 
-@TRAINER_REGISTRY.register("dkt")
-class DKTTrainer(BaseTrainer):
+@TRAINER_REGISTRY.register("dkt_pebg")
+class DKTPEBGTrainer(BaseTrainer):
     def __init__(
         self,
         model,
@@ -114,19 +114,35 @@ class DKTTrainer(BaseTrainer):
         rshft = batch["shft_rseqs"].to(self.device).float()
         sm = batch["smasks"].to(self.device)
 
-        if cseqs is not None and cseqs.numel() > 0:
+        uses_binary_target = bool(getattr(self.model, "uses_binary_target", False))
+        if uses_binary_target:
+            if qseqs is None or qseqs.numel() == 0:
+                raise ValueError("Original PEBG-DKT mode requires qseqs.")
+            if qshft is None or qshft.numel() == 0:
+                raise ValueError("Original PEBG-DKT mode requires shft_qseqs.")
+
+            y = self.model(qseqs, rseqs, q_next=qshft)
+            pred = torch.masked_select(y, sm)
+            target = torch.masked_select(rshft, sm)
+            loss = binary_cross_entropy(pred.double(), target.double())
+            return pred, target, loss
+
+        use_question_inputs = bool(getattr(self.model, "use_question_inputs", False))
+        if use_question_inputs and qseqs is not None and qseqs.numel() > 0:
+            base_seqs = qseqs
+        elif cseqs is not None and cseqs.numel() > 0:
             base_seqs = cseqs
         elif qseqs is not None and qseqs.numel() > 0:
             base_seqs = qseqs
         else:
-            raise ValueError("DKTTrainer requires qseqs or cseqs.")
+            raise ValueError("DKTPEBGTrainer requires qseqs or cseqs.")
 
         if cshft is not None and cshft.numel() > 0:
             target_idx = cshft
         elif qshft is not None and qshft.numel() > 0:
             target_idx = qshft
         else:
-            raise ValueError("DKTTrainer requires shft_cseqs or shft_qseqs.")
+            raise ValueError("DKTPEBGTrainer requires shft_cseqs or shft_qseqs.")
 
         y = self.model(base_seqs, rseqs)
 
@@ -180,4 +196,3 @@ def cal_loss(model, ys, r, rshft, sm, preloss=None):
     t = torch.masked_select(rshft, sm)
     loss = binary_cross_entropy(y.double(), t.double())
     return loss
-
