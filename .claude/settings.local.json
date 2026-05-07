@@ -15,7 +15,8 @@
       "Bash(python:*)",
       "Bash(pip show:*)",
       "WebFetch(domain:github.com)",
-      "Bash(cd:*、)"
+      "Bash(head:*)",
+      "Bash(which python:*)"
     ]
   }
 }

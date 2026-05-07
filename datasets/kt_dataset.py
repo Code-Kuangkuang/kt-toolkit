@@ -1,8 +1,72 @@
 import os
+import hashlib
+from pathlib import Path
 
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_CACHE_DIR = PROJECT_ROOT / ".cache" / "kt_dataset"
+
+
+def _dataset_cache_path(file_path, tag):
+    path = Path(file_path).resolve()
+    stat = path.stat()
+    cache_root = Path(os.environ.get("KT_DATASET_CACHE_DIR", DEFAULT_CACHE_DIR))
+    digest_src = f"{path}|{stat.st_mtime_ns}|{stat.st_size}|{tag}"
+    digest = hashlib.sha1(digest_src.encode("utf-8")).hexdigest()
+    cache_root.mkdir(parents=True, exist_ok=True)
+    return cache_root / f"{path.stem}_{digest}.pkl"
+
+
+def _filter_rows_by_folds(df, folds, sequence_path):
+    """Filter by fold when fold column exists; allow fold-less test files."""
+    fold_set = set(folds)
+    if "fold" in df.columns:
+        df["fold"] = df["fold"].astype(int)
+        filtered = df[df["fold"].isin(fold_set)]
+        if filtered.empty:
+            available_folds = sorted(df["fold"].unique().tolist())
+            raise ValueError(
+                f"No rows found in {sequence_path} for folds {sorted(fold_set)}. "
+                f"Available folds: {available_folds}."
+            )
+        return filtered
+    if fold_set == {-1}:
+        return df
+    raise KeyError(
+        f"Column 'fold' is required in {sequence_path} for training/validation splits."
+    )
+
+
+def _resolve_selectmasks(row, responses):
+    """Use provided selectmasks, or derive from responses when missing."""
+    if "selectmasks" in row.index and row["selectmasks"]:
+        raw_masks = [int(x) for x in row["selectmasks"].split(",")]
+        if len(raw_masks) == len(responses):
+            return raw_masks
+    return [1 if r != -1 else -1 for r in responses]
+
+
+def _pad_1d_sequences(sequences, pad_val):
+    if len(sequences) == 0:
+        return sequences
+    max_len = max(len(seq) for seq in sequences)
+    return [seq + [pad_val] * (max_len - len(seq)) for seq in sequences]
+
+
+def _pad_2d_sequences(sequences, pad_row):
+    if len(sequences) == 0:
+        return sequences
+    max_len = max(len(seq) for seq in sequences)
+    return [seq + [pad_row[:] for _ in range(max_len - len(seq))] for seq in sequences]
+
+
+def _sanitize_response_sequence(seq_tensor):
+    """Map unknown response -1 to 0 for model inputs."""
+    return torch.where(seq_tensor < 0, torch.zeros_like(seq_tensor), seq_tensor)
 
 
 class KTDataset(Dataset):
@@ -14,7 +78,7 @@ class KTDataset(Dataset):
         folds = sorted(list(folds))
         folds_str = "_" + "_".join([str(f) for f in folds])
         cache_tag = "ts1" if self.use_timestamps else "ts0"
-        processed = file_path + folds_str + f"_{cache_tag}.pkl"
+        processed = _dataset_cache_path(file_path, f"{folds_str}_{cache_tag}_kt")
 
         if not os.path.exists(processed):
             self.dori = self._load_data(file_path, folds)
@@ -41,8 +105,11 @@ class KTDataset(Dataset):
                 continue
             if hasattr(val, 'numel') and val.numel() == 0:
                 continue
-            seqs = self.dori[key][index][:-1] * mseqs
-            shft_seqs = self.dori[key][index][1:] * mseqs
+            cur = self.dori[key][index]
+            if key == "rseqs":
+                cur = _sanitize_response_sequence(cur)
+            seqs = cur[:-1] * mseqs
+            shft_seqs = cur[1:] * mseqs
             dcur[key] = seqs
             dcur["shft_" + key] = shft_seqs
         dcur["masks"] = mseqs
@@ -55,17 +122,16 @@ class KTDataset(Dataset):
         if self.use_timestamps:
             dori["tseqs"] = []
         df = pd.read_csv(sequence_path, dtype=str, keep_default_na=False)
-        if "fold" in df.columns:
-            df["fold"] = df["fold"].astype(int)
-        df = df[df["fold"].isin(folds)]
+        df = _filter_rows_by_folds(df, folds, sequence_path)
 
         for _, row in df.iterrows():
             if "concepts" in self.input_type:
                 dori["cseqs"].append([int(x) for x in row["concepts"].split(",")])
             if "questions" in self.input_type:
                 dori["qseqs"].append([int(x) for x in row["questions"].split(",")])
-            dori["rseqs"].append([int(x) for x in row["responses"].split(",")])
-            dori["smasks"].append([int(x) for x in row["selectmasks"].split(",")])
+            responses = [int(x) for x in row["responses"].split(",")]
+            dori["rseqs"].append(responses)
+            dori["smasks"].append(_resolve_selectmasks(row, responses))
             # Load timestamps if available
             if self.use_timestamps and "timestamps" in row:
                 dori["tseqs"].append([int(x) for x in row["timestamps"].split(",")])
@@ -74,6 +140,14 @@ class KTDataset(Dataset):
                 shft_timestamps = [0] + timestamps[:-1]
                 it = [max(min((t - s) // 1000 // 60, 43200), -1) for t, s in zip(timestamps, shft_timestamps)]
                 dori["itseqs"].append(it)
+
+        dori["cseqs"] = _pad_1d_sequences(dori["cseqs"], self.pad_val)
+        dori["qseqs"] = _pad_1d_sequences(dori["qseqs"], self.pad_val)
+        dori["rseqs"] = _pad_1d_sequences(dori["rseqs"], self.pad_val)
+        dori["smasks"] = _pad_1d_sequences(dori["smasks"], self.pad_val)
+        if self.use_timestamps:
+            dori["tseqs"] = _pad_1d_sequences(dori.get("tseqs", []), self.pad_val)
+            dori["itseqs"] = _pad_1d_sequences(dori.get("itseqs", []), self.pad_val)
 
         if len(dori["cseqs"]) > 0:
             seq_for_mask = torch.tensor(dori["cseqs"], dtype=torch.long)
@@ -139,7 +213,10 @@ class KTQueDataset(Dataset):
         folds = sorted(list(folds))
         folds_str = "_" + "_".join([str(f) for f in folds])
         cache_tag = "ts1" if self.use_timestamps else "ts0"
-        processed = file_path + folds_str + f"_{cache_tag}_qlevel.pkl"
+        processed = _dataset_cache_path(
+            file_path,
+            f"{folds_str}_{cache_tag}_{concept_mode}_mc{max_concepts}_qlevel",
+        )
 
         if not os.path.exists(processed):
             self.dori = self._load_data(file_path, folds)
@@ -175,6 +252,8 @@ class KTQueDataset(Dataset):
                 continue
 
             cur = self.dori[key][index]
+            if key == "rseqs":
+                cur = _sanitize_response_sequence(cur)
             if key == "cseqs" and cur.dim() >= 2 and self.concept_mode == "first":
                 cur = cur[:, 0]
 
@@ -197,9 +276,7 @@ class KTQueDataset(Dataset):
         if self.use_timestamps:
             dori["tseqs"] = []
         df = pd.read_csv(sequence_path, dtype=str, keep_default_na=False)
-        if "fold" in df.columns:
-            df["fold"] = df["fold"].astype(int)
-        df = df[df["fold"].isin(folds)]
+        df = _filter_rows_by_folds(df, folds, sequence_path)
 
         for _, row in df.iterrows():
             if "concepts" in self.input_type:
@@ -215,8 +292,9 @@ class KTQueDataset(Dataset):
                 dori["cseqs"].append(row_skills)  # 2D: [seq_len, max_concepts]
             if "questions" in self.input_type:
                 dori["qseqs"].append([int(x) for x in row["questions"].split(",")])
-            dori["rseqs"].append([int(x) for x in row["responses"].split(",")])
-            dori["smasks"].append([int(x) for x in row["selectmasks"].split(",")])
+            responses = [int(x) for x in row["responses"].split(",")]
+            dori["rseqs"].append(responses)
+            dori["smasks"].append(_resolve_selectmasks(row, responses))
             # Load timestamps if available
             if self.use_timestamps and "timestamps" in row:
                 dori["tseqs"].append([int(x) for x in row["timestamps"].split(",")])
@@ -225,6 +303,14 @@ class KTQueDataset(Dataset):
                 shft_timestamps = [0] + timestamps[:-1]
                 it = [max(min((t - s) // 1000 // 60, 43200), -1) for t, s in zip(timestamps, shft_timestamps)]
                 dori["itseqs"].append(it)
+
+        dori["cseqs"] = _pad_2d_sequences(dori["cseqs"], [-1] * self.max_concepts)
+        dori["qseqs"] = _pad_1d_sequences(dori["qseqs"], self.pad_val)
+        dori["rseqs"] = _pad_1d_sequences(dori["rseqs"], self.pad_val)
+        dori["smasks"] = _pad_1d_sequences(dori["smasks"], self.pad_val)
+        if self.use_timestamps:
+            dori["tseqs"] = _pad_1d_sequences(dori.get("tseqs", []), self.pad_val)
+            dori["itseqs"] = _pad_1d_sequences(dori.get("itseqs", []), self.pad_val)
 
         # Convert to tensors
         if len(dori["cseqs"]) > 0:

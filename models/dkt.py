@@ -22,7 +22,8 @@ class DKT(Module):
 
     def forward(self, q, r):
         q = q.long().clamp(min=0, max=self.num_c - 1)
-        r = r.long()
+        # Test sequences can contain -1 (unknown future response); map to valid index range.
+        r = r.long().clamp(min=0, max=1)
         x = q + self.num_c * r
         xemb = self.interaction_emb(x)
 

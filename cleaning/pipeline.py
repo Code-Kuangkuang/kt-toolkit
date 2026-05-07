@@ -1,4 +1,4 @@
-# 清洗调度器
+# Cleaning pipeline dispatcher.
 from cleaning.adapters import ADAPTERS
 
 def run_cleaning(cfg):

@@ -15,3 +15,9 @@ from .deep_irt_trainer import DeepIRTTrainer  # noqa: F401
 from .saint_trainer import SAINTTrainer  # noqa: F401
 from .saint_plus_trainer import SAINTpTrainer  # noqa: F401
 from .gbkt_trainer import GBKTTrainer  # noqa: F401
+from .gbkt_svm_aux_trainer import GBKTSVMAuxTrainer  # noqa: F401
+from .gbsvkt_trainer import GBSVKTTrainer  # noqa: F401
+from .gbktv2_train import GBKTV2Trainer  # noqa: F401
+from .gbsvkt_fix_trainer import GBSVKTFixTrainer  # noqa: F401
+from .simplekt_trainer import SimpleKTTrainer  # noqa: F401
+from .ukt_trainer import UKTTrainer  # noqa: F401

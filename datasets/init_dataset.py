@@ -6,6 +6,14 @@ from core.registry import DATASET_REGISTRY
 from .kt_dataset import KTDataset, KTQueDataset
 
 
+def _resolve_sequence_path(cfg, primary_key, fallback_key):
+    primary_name = cfg.get(primary_key, cfg[fallback_key])
+    primary_path = os.path.join(cfg["dpath"], primary_name)
+    if os.path.exists(primary_path):
+        return primary_path
+    return os.path.join(cfg["dpath"], cfg[fallback_key])
+
+
 @DATASET_REGISTRY.register("kt_default")
 def build_dataloaders(dataset_name, data_config, fold, batch_size, model_name=None, dataset_mode=None, num_workers=0, use_timestamps=False, **kwargs):
     """Build dataloaders with optional mode override.
@@ -39,11 +47,11 @@ def build_dataloaders(dataset_name, data_config, fold, batch_size, model_name=No
         valid_ds = KTDataset(train_valid_path, cfg["input_type"], {fold}, use_timestamps=use_timestamps)
     elif dataset_mode == "all_in_one":
         # ALL-in-One mode: use KTQueDataset with 2D concept sequences
-        train_valid_path = os.path.join(cfg["dpath"], cfg.get("train_valid_file_quelevel", cfg["train_valid_file"]))
+        train_valid_path = _resolve_sequence_path(cfg, "train_valid_file_quelevel", "train_valid_file")
         max_concepts = cfg.get("max_concepts", 4)
         all_folds = set(cfg["folds"])
 
-        concept_mode = "multi" if (model_name or "").lower() in {"qikt", "gbkt"} else "first"
+        concept_mode = "multi" if (model_name or "").lower() in {"qikt", "gbkt", "gbktv2"} else "first"
         train_ds = KTQueDataset(
             train_valid_path, cfg["input_type"], all_folds - {fold},
             concept_num=cfg.get("num_c", 0), max_concepts=max_concepts, concept_mode=concept_mode,
@@ -74,7 +82,7 @@ def build_quelevel_dataloaders(dataset_name, data_config, fold, batch_size, num_
     else:
         cfg = data_config
 
-    train_valid_path = os.path.join(cfg["dpath"], cfg.get("train_valid_file_quelevel", cfg["train_valid_file"]))
+    train_valid_path = _resolve_sequence_path(cfg, "train_valid_file_quelevel", "train_valid_file")
     max_concepts = cfg.get("max_concepts", 4)
     all_folds = set(cfg["folds"])
 
@@ -108,9 +116,9 @@ def build_test_dataloaders(dataset_name, data_config, batch_size, model_name=Non
         cfg = data_config
 
     if dataset_mode == "all_in_one":
-        test_path = os.path.join(cfg["dpath"], cfg.get("test_file_quelevel", cfg["test_file"]))
+        test_path = _resolve_sequence_path(cfg, "test_file_quelevel", "test_file")
         max_concepts = cfg.get("max_concepts", 4)
-        concept_mode = "multi" if (model_name or "").lower() in {"qikt", "gbkt"} else "first"
+        concept_mode = "multi" if (model_name or "").lower() in {"qikt", "gbkt", "gbktv2"} else "first"
         test_ds = KTQueDataset(
             test_path, cfg["input_type"], {-1},
             concept_num=cfg.get("num_c", 0), max_concepts=max_concepts, concept_mode=concept_mode,

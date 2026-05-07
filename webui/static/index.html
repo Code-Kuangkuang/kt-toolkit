@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>KT-Toolkit WebUI</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>KT-Toolkit</h1>
+        <p id="runtimeSummary">Loading runtime config...</p>
+      </div>
+      <button id="refreshBtn" type="button">Refresh</button>
+    </header>
+
+    <main class="layout">
+      <section class="panel">
+        <div class="section-title">
+          <h2>New Experiment</h2>
+          <span id="submitStatus"></span>
+        </div>
+        <form id="jobForm" class="form-grid">
+          <label>
+            Dataset
+            <select name="dataset_name" required></select>
+          </label>
+          <label>
+            Model
+            <select name="model_name" required></select>
+          </label>
+          <label>
+            Fold
+            <input name="fold" type="number" min="0" value="0" />
+          </label>
+          <label class="inline-field">
+            <input name="cv" type="checkbox" />
+            Cross validation
+          </label>
+          <label>
+            Folds
+            <input name="folds" value="0-4" />
+          </label>
+          <label>
+            Epochs
+            <input name="num_epochs" type="number" min="1" placeholder="config" />
+          </label>
+          <label>
+            Batch Size
+            <input name="batch_size" type="number" min="1" placeholder="config" />
+          </label>
+          <label>
+            GPU
+            <input name="gpu" type="number" min="0" value="0" />
+          </label>
+          <label>
+            Seed
+            <input name="seed" type="number" value="3407" />
+          </label>
+          <label>
+            W&B
+            <select name="use_wandb">
+              <option value="0">Off</option>
+              <option value="1">On</option>
+            </select>
+          </label>
+          <label class="full">
+            Save Base
+            <input name="save_dir" placeholder=".webui/runs" />
+          </label>
+          <div class="config-section full">
+            <div class="config-header">
+              <h3>Model Config</h3>
+              <span id="modelConfigSummary"></span>
+            </div>
+            <div id="modelConfigFields" class="config-grid"></div>
+          </div>
+          <button class="primary full" type="submit">Start Training</button>
+        </form>
+      </section>
+
+      <section class="panel jobs-panel">
+        <div class="section-title">
+          <h2>Experiments</h2>
+          <span id="jobCount"></span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Status</th>
+                <th>Dataset</th>
+                <th>Model</th>
+                <th>Fold</th>
+                <th>GPU</th>
+                <th>Created</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="jobsBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel detail-panel">
+        <div class="section-title">
+          <h2>Run Detail</h2>
+          <div class="actions">
+            <button id="stopBtn" type="button" disabled>Stop</button>
+            <button id="reloadDetailBtn" type="button" disabled>Reload</button>
+          </div>
+        </div>
+        <div id="detailMeta" class="meta-grid"></div>
+        <div class="chart-toolbar">
+          <label>
+            Chart View
+            <select id="chartRunSelect" disabled>
+              <option value="">No metrics</option>
+            </select>
+          </label>
+        </div>
+        <div class="chart-grid">
+          <section>
+            <div class="chart-title">
+              <h3>Loss</h3>
+              <div class="chart-actions">
+                <span id="lossChartLabel"></span>
+                <button type="button" data-chart="loss">Expand</button>
+              </div>
+            </div>
+            <canvas id="lossChart" class="interactive-chart" data-chart="loss" width="720" height="240"></canvas>
+          </section>
+          <section>
+            <div class="chart-title">
+              <h3>AUC / ACC</h3>
+              <div class="chart-actions">
+                <span id="scoreChartLabel"></span>
+                <button type="button" data-chart="score">Expand</button>
+              </div>
+            </div>
+            <canvas id="scoreChart" class="interactive-chart" data-chart="score" width="720" height="240"></canvas>
+          </section>
+        </div>
+        <div class="detail-grid">
+          <section class="metrics-section">
+            <h3>Metrics</h3>
+            <div id="metricsList" class="metrics-list"></div>
+          </section>
+          <section class="log-section">
+            <h3>Log</h3>
+            <pre id="logBox"></pre>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <div id="chartModal" class="chart-modal" aria-hidden="true">
+      <div class="chart-modal-panel" role="dialog" aria-modal="true" aria-labelledby="chartModalTitle">
+        <div class="chart-modal-header">
+          <div>
+            <h2 id="chartModalTitle">Chart</h2>
+            <p id="chartModalSubtitle"></p>
+          </div>
+          <button id="chartModalClose" type="button">Close</button>
+        </div>
+        <canvas id="expandedChart" width="1280" height="620"></canvas>
+      </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

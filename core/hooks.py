@@ -1,5 +1,7 @@
 import copy
+import json
 import os
+import time
 
 import torch
 
@@ -83,6 +85,36 @@ class BestMetricsHook(Hook):
             trainer.best_metrics = self.best_metrics
             trainer.best_metric_key = self.metric_key
             trainer.best_metric_value = self.best_value
+
+
+class MetricsJsonlHook(Hook):
+    def __init__(self, path):
+        self.path = path
+
+    @staticmethod
+    def _json_safe(value):
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, dict):
+            return {str(k): MetricsJsonlHook._json_safe(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [MetricsJsonlHook._json_safe(v) for v in value]
+        if hasattr(value, "item"):
+            try:
+                return value.item()
+            except Exception:
+                pass
+        return str(value)
+
+    def on_train_start(self, trainer):
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+
+    def on_epoch_end(self, trainer, metrics):
+        payload = self._json_safe(metrics)
+        payload["time"] = time.time()
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        with open(self.path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=True) + "\n")
 
 
 class WandbHook(Hook):

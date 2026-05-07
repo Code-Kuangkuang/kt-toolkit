@@ -31,10 +31,14 @@ class SAKT(Module):
         self.pred = Linear(self.emb_size, 1)
 
     def base_emb(self, q, r, qry):
+        q = q.long().clamp(min=0, max=self.num_c - 1)
+        qry = qry.long().clamp(min=0, max=self.num_c - 1)
+        r = r.long().clamp(min=0, max=1)
         x = q + self.num_c * r
         qshftemb, xemb = self.exercise_emb(qry), self.interaction_emb(x)
-    
-        posemb = self.position_emb(pos_encode(xemb.shape[1]))
+
+        pos_ids = pos_encode(xemb.shape[1]).clamp(max=self.position_emb.num_embeddings - 1)
+        posemb = self.position_emb(pos_ids)
         xemb = xemb + posemb
         return qshftemb, xemb
 

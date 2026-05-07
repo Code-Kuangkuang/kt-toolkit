@@ -1,4 +1,6 @@
 .vscode/
+.claude/
+.idea/
 saved_model/
 wandb/
 paper/
@@ -11,8 +13,12 @@ data/bridge2algebra2006/
 data/ednet/
 data/junyi2015/
 data/nips_task34/
+data/peiyou
 blog/
+competitions/
 otherKT/
 configs/wandb.json
 __pycache__
 *.pyc
+.webui/
+.cache/

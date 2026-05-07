@@ -294,12 +294,12 @@ class GBKT(nn.Module):
                 mu_h_history = torch.stack(mu_h_history_list, dim=1)
                 mu_h_next = self.ball_attn(mu_h_next, mu_h_history)
 
-            # Detach history to avoid building a long-time computation graph.
-            mu_h_history_list.append(mu_h_next.detach())
-
             valid_cur = (q_t >= 0).float().unsqueeze(-1)
             mu_h = valid_cur * mu_h_next + (1.0 - valid_cur) * mu_h
             r_h = valid_cur * r_h_next + (1.0 - valid_cur) * r_h
+
+            # Detach history to avoid building a long-time computation graph.
+            mu_h_history_list.append(mu_h.detach())
 
             mu_d_next, r_d_next = mu_d_all[:, t + 1, :], r_d_all[:, t + 1, :]
             pred = self.ball_to_ball_predict(mu_h, r_h, mu_d_next, r_d_next)

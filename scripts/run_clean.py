@@ -1,4 +1,4 @@
-# 入口脚本；读取配置并调度清洗流程
+# Entry script: load config and run the cleaning pipeline.
 import sys
 from pathlib import Path
 

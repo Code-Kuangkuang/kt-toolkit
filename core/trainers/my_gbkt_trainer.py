@@ -1,7 +1,6 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
-from sklearn import metrics
 from torch.nn.functional import binary_cross_entropy, mse_loss
 
 from core.registry import TRAINER_REGISTRY
@@ -78,53 +77,12 @@ class GBKTTrainer(BaseTrainer):
             losses.append(loss.item())
             self._print_progress(batch_idx, total_batches, loss.item())
 
-        if losses:
-            bar = "\u2588" * 25
-            print(f"  \u2502{bar}\u2502 100% | Loss: {losses[-1]:.4f}")
 
-        # Step LR scheduler per epoch.
+        # Step LR scheduler per epoch (PyTorch 2.0+ recommendation: use step() without epoch parameter)
         if self.scheduler is not None:
             self.scheduler.step()
 
         return float(np.mean(losses)) if losses else 0.0
-
-    def _eval_epoch(self, epoch):
-        self.model.eval()
-        y_true = []
-        y_score = []
-        with torch.no_grad():
-            for batch in self.valid_loader:
-                pred, target, _ = self._forward_batch(batch)
-                if pred.numel() == 0:
-                    continue
-                y_score.append(pred.detach().cpu().numpy())
-                y_true.append(target.detach().cpu().numpy())
-
-        if not y_true:
-            return {"valid_auc": -1, "valid_acc": -1}
-
-        ts = np.concatenate(y_true, axis=0)
-        ps = np.concatenate(y_score, axis=0)
-        try:
-            auc = metrics.roc_auc_score(y_true=ts, y_score=ps)
-        except Exception:
-            auc = -1
-        prelabels = [1 if p >= 0.5 else 0 for p in ps]
-        acc = metrics.accuracy_score(ts, prelabels)
-        return {"valid_auc": auc, "valid_acc": acc}
-
-    def _should_stop(self, epoch, metrics_dict):
-        metric = metrics_dict.get(self.metric_key, None)
-        if metric is None:
-            return False
-        # Changed: 1e-4 instead of 1e-3, avoid premature stopping.
-        if self.best_metric is None or metric > self.best_metric + 1e-4:
-            self.best_metric = metric
-            self.best_epoch = epoch
-            return False
-        if self.patience is None:
-            return False
-        return (epoch - self.best_epoch) >= self.patience
 
     @staticmethod
     def _concat_full(seqs, shft):
@@ -232,31 +190,3 @@ class GBKTTrainer(BaseTrainer):
             + lambda_conf * loss_conf
         )
         return pred, target, loss
-
-    def evaluate_test(self):
-        if self.test_loader is None:
-            return {"test_auc": -1, "test_acc": -1}
-
-        self.model.eval()
-        y_true = []
-        y_score = []
-        with torch.no_grad():
-            for batch in self.test_loader:
-                pred, target, _ = self._forward_batch(batch)
-                if pred.numel() == 0:
-                    continue
-                y_score.append(pred.detach().cpu().numpy())
-                y_true.append(target.detach().cpu().numpy())
-
-        if not y_true:
-            return {"test_auc": -1, "test_acc": -1}
-
-        ts = np.concatenate(y_true, axis=0)
-        ps = np.concatenate(y_score, axis=0)
-        try:
-            auc = metrics.roc_auc_score(y_true=ts, y_score=ps)
-        except Exception:
-            auc = -1
-        prelabels = [1 if p >= 0.5 else 0 for p in ps]
-        acc = metrics.accuracy_score(ts, prelabels)
-        return {"test_auc": auc, "test_acc": acc}

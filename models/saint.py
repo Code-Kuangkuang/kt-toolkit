@@ -212,6 +212,7 @@ class SAINT(nn.Module):
             in_pos = pos_encode(in_ex.shape[1])
         else:
             in_pos = pos_encode(in_cat.shape[1])
+        in_pos = in_pos.clamp(max=self.embd_pos.num_embeddings - 1)
         in_pos = self.embd_pos(in_pos)
 
         first_block = True

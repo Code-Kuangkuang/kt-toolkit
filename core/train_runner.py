@@ -1,182 +1,24 @@
 import copy
 import datetime
-import json
 import os
 import uuid
-import statistics
-import csv
-import random
 
 import torch
-import numpy as np
 from rich import print
 
-from core.device_info import get_device_info
 from core.factory import build_dataset, build_model, build_trainer
-from core.hooks import BestMetricsHook, SaveBestHook, WandbHook
+from core.run_support import (
+    aggregate_fold_metrics,
+    apply_overrides,
+    build_hooks,
+    build_optimizer,
+    print_cv_summary,
+    print_run_overview,
+    save_cv_summary,
+    save_run_config,
+    set_seed,
+)
 from strategies import apply_dkt_pebg_strategy
-
-
-def set_seed(seed):
-    """Set the global random seed.
-
-    Args:
-        seed (int): random seed
-    """
-    try:
-        import torch
-        torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
-            torch.backends.cudnn.deterministic = True
-            torch.backends.cudnn.benchmark = False
-    except Exception as e:
-        print("Set seed failed,details are ", e)
-        pass
-    np.random.seed(seed)
-    random.seed(seed)
-    # cuda env
-    os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
-    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"
-
-
-def save_run_config(path, payload):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=True)
-
-
-def apply_overrides(train_cfg, model_cfg, overrides):
-    if overrides.get("batch_size") is not None:
-        train_cfg["batch_size"] = overrides["batch_size"]
-    if overrides.get("num_epochs") is not None:
-        train_cfg["num_epochs"] = overrides["num_epochs"]
-    if overrides.get("learning_rate") is not None:
-        model_cfg["learning_rate"] = overrides["learning_rate"]
-    if overrides.get("emb_size") is not None:
-        model_cfg["emb_size"] = overrides["emb_size"]
-    if overrides.get("dropout") is not None:
-        model_cfg["dropout"] = overrides["dropout"]
-    if overrides.get("dataset_mode") is not None:
-        train_cfg["dataset_mode"] = overrides["dataset_mode"]
-    if overrides.get("patience") is not None:
-        train_cfg["patience"] = overrides["patience"]
-
-
-def build_optimizer(train_cfg, model_cfg, model):
-    optimizer_name = train_cfg.get("optimizer", "adam").lower()
-    weight_decay = model_cfg.get("weight_decay", train_cfg.get("weight_decay", 0.0))
-    if optimizer_name == "sgd":
-        return torch.optim.SGD(
-            model.parameters(), lr=model_cfg["learning_rate"], momentum=0.9, weight_decay=weight_decay
-        )
-    return torch.optim.Adam(model.parameters(), lr=model_cfg["learning_rate"], weight_decay=weight_decay)
-
-
-def build_hooks(wandb_cfg, run_name, dataset_name, model_name, fold_id, train_cfg, model_cfg, cv_run_name, ckpt_dir, emb_type):
-    hooks = [
-        BestMetricsHook(metric_key="valid_auc", mode="max"),
-        SaveBestHook(save_dir=ckpt_dir, filename=f"{emb_type}_model.pt"),
-    ]
-
-    if wandb_cfg:
-        wandb_kwargs = {
-            "enabled": True,
-            "run_name": run_name,
-            "config": {
-                "dataset_name": dataset_name,
-                "model_name": model_name,
-                "fold": fold_id,
-                "train_config": train_cfg,
-                "model_config": model_cfg,
-                "cv_run_name": cv_run_name,
-            },
-            "project": wandb_cfg.get("project"),
-            "entity": wandb_cfg.get("entity") or wandb_cfg.get("uid"),
-            "api_key": wandb_cfg.get("api_key"),
-        }
-        if cv_run_name is not None:
-            wandb_kwargs["group"] = cv_run_name
-        mode = wandb_cfg.get("mode")
-        if mode is not None:
-            wandb_kwargs["mode"] = mode
-        hooks.append(WandbHook(**wandb_kwargs))
-
-    return hooks
-
-
-def print_run_overview(device, model, model_cfg, dataset_cfg, train_cfg):
-    info = get_device_info(device)
-    print("Training on device:\n" + "\n".join(info.format_lines()))
-    print(f"Model_Info:\n[green][bold]{model}[/bold][/green]\n")
-    print("Model_Config:\n" + json.dumps(model_cfg, indent=2, ensure_ascii=True) + "\n")
-    print("Dataset_Config:\n" + json.dumps(dataset_cfg, indent=2, ensure_ascii=True) + "\n")
-    print("Train_Config:\n" + json.dumps(train_cfg, indent=2, ensure_ascii=True) + "\n")
-
-
-def aggregate_fold_metrics(fold_results):
-    numeric_keys = set()
-    for r in fold_results:
-        bm = r.get("best_metrics") or {}
-        for k, v in bm.items():
-            if isinstance(v, (int, float)):
-                numeric_keys.add(k)
-
-    summary = {}
-    for k in sorted(numeric_keys):
-        values = []
-        for r in fold_results:
-            bm = r.get("best_metrics") or {}
-            v = bm.get(k)
-            if isinstance(v, (int, float)):
-                values.append(float(v))
-        if not values:
-            continue
-        mean_v = statistics.mean(values)
-        std_v = statistics.pstdev(values) if len(values) > 1 else 0.0
-        summary[k] = {
-            "mean": mean_v,
-            "std": std_v,
-            "values": values,
-        }
-    return summary
-
-
-def save_cv_summary(cv_dir, cv_payload, fold_results):
-    save_run_config(os.path.join(cv_dir, "cv_summary.json"), cv_payload)
-
-    csv_path = os.path.join(cv_dir, "cv_summary.csv")
-    with open(csv_path, "w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=["fold", "valid_auc", "valid_acc", "best_epoch", "ckpt_dir", "best_path", "run_name"],
-        )
-        writer.writeheader()
-        for r in fold_results:
-            bm = r.get("best_metrics") or {}
-            writer.writerow(
-                {
-                    "fold": r.get("fold"),
-                    "valid_auc": bm.get("valid_auc"),
-                    "valid_acc": bm.get("valid_acc"),
-                    "best_epoch": bm.get("epoch"),
-                    "ckpt_dir": r.get("ckpt_dir"),
-                    "best_path": r.get("best_path"),
-                    "run_name": r.get("run_name"),
-                }
-            )
-
-
-def print_cv_summary(agg, cv_dir):
-    if "valid_auc" in agg:
-        m = agg["valid_auc"]["mean"]
-        s = agg["valid_auc"]["std"]
-        print(f"\n[green][bold]CV valid_auc mean={m:.6f} std={s:.6f}[/bold][/green]")
-    if "valid_acc" in agg:
-        m = agg["valid_acc"]["mean"]
-        s = agg["valid_acc"]["std"]
-        print(f"[green][bold]CV valid_acc mean={m:.6f} std={s:.6f}[/bold][/green]\n")
-    print(f"CV summary saved to: [bold]{cv_dir}[/bold]")
 
 
 def train_one_fold(
@@ -197,6 +39,7 @@ def train_one_fold(
     wandb_config_path,
     cv_run_name,
     overrides,
+    gpu_id=0,
 ):
     kt_cfg = copy.deepcopy(kt_cfg_raw)
     train_cfg_local = kt_cfg["train_config"]
@@ -242,7 +85,13 @@ def train_one_fold(
     model_kwargs = {k: v for k, v in model_cfg_local.items() if k not in other_config_keys}
 
     set_seed(seed)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # Set device with specified GPU ID
+    if torch.cuda.is_available():
+        device = f"cuda:{gpu_id}"
+        torch.cuda.set_device(gpu_id)
+    else:
+        device = "cpu"
 
     model = build_model(
         model_name,
@@ -283,10 +132,17 @@ def train_one_fold(
         use_timestamps=use_timestamps,
     )
 
-    # Build test dataloader if data exists
+    # Build test dataloader if data exists. Peiyou's official test file has
+    # hidden targets marked as -1, so it is for prediction/submission only.
     test_loader = None
+    is_peiyou = dataset_name.lower() == "peiyou"
     test_path = os.path.join(dataset_cfg_local["dpath"], dataset_cfg_local.get("test_file_quelevel", dataset_cfg_local.get("test_file", "")))
-    if os.path.exists(dataset_cfg_local["dpath"]) and dataset_cfg_local.get("test_file"):
+    if is_peiyou:
+        print(
+            "Peiyou test evaluation disabled: pykt_test.csv contains hidden "
+            "targets marked as -1. Use scripts/predict_peiyou.py to generate prediction.csv."
+        )
+    elif os.path.exists(dataset_cfg_local["dpath"]) and dataset_cfg_local.get("test_file"):
         try:
             test_loader = build_dataset(
                 "kt_test",
@@ -375,18 +231,43 @@ def train_one_fold(
     trainer = build_trainer(model_name, **trainer_kwargs)
     trainer.run()
 
-    # Evaluate on test set if available
-    test_metrics = None
+    best_path = getattr(trainer, "best_path", None)
+
+
+
+    last_epoch_path = os.path.join(ckpt_dir, "last_epoch_model.pt")
+    torch.save(trainer.model.state_dict(), last_epoch_path)
+
+
+    best_test_metrics = None
+    if best_path and os.path.exists(best_path):
+        trainer.model.load_state_dict(torch.load(best_path, weights_only=True))
+        if test_loader is not None:
+            print(f"Loaded best model from epoch {trainer.best_metrics.get('epoch', '?')} for test evaluation")
+            best_test_metrics = trainer.evaluate_test()
+            if best_test_metrics:
+                print(f"[Best-Valid Epoch] Test AUC={best_test_metrics.get('test_auc', -1):.4f}, ACC={best_test_metrics.get('test_acc', -1):.4f}")
+        else:
+            print(f"Loaded best model from epoch {trainer.best_metrics.get('epoch', '?')}")
+
+
+    last_test_metrics = None
     if test_loader is not None:
-        test_metrics = trainer.evaluate_test()
-        if test_metrics:
-            print(f"Test results: AUC={test_metrics.get('test_auc', -1):.4f}, ACC={test_metrics.get('test_acc', -1):.4f}")
+        trainer.model.load_state_dict(torch.load(last_epoch_path, weights_only=True))
+        print(f"Loaded last epoch model for test evaluation")
+        last_test_metrics = trainer.evaluate_test()
+        if last_test_metrics:
+            print(f"[Last Epoch]        Test AUC={last_test_metrics.get('test_auc', -1):.4f}, ACC={last_test_metrics.get('test_acc', -1):.4f}")
 
     best_metrics = getattr(trainer, "best_metrics", None)
     if best_metrics is not None:
-        # Merge test metrics into best_metrics if available
-        if test_metrics:
-            best_metrics.update(test_metrics)
+        # Rename keys so best_metric dict carries unambiguous names
+        if best_test_metrics:
+            best_metrics["best_test_auc"] = best_test_metrics.get("test_auc", -1)
+            best_metrics["best_test_acc"] = best_test_metrics.get("test_acc", -1)
+        if last_test_metrics:
+            best_metrics["last_test_auc"] = last_test_metrics.get("test_auc", -1)
+            best_metrics["last_test_acc"] = last_test_metrics.get("test_acc", -1)
         save_run_config(os.path.join(ckpt_dir, "best_metrics.json"), best_metrics)
 
     return {

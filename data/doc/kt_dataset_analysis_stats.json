@@ -1,0 +1,310 @@
+[
+  {
+    "dataset": "algebra2005",
+    "method": "processed_sequence",
+    "source_files": [
+      "train_valid_sequences.csv",
+      "test_sequences.csv"
+    ],
+    "config_num_q": 173113,
+    "config_num_c": 112,
+    "input_type": "questions,concepts",
+    "max_concepts": 7,
+    "students": 574,
+    "questions": 173113,
+    "concepts": 112,
+    "interactions": 884098,
+    "correct_rate": 0.7143,
+    "seq_rows": 4712,
+    "seq_len_mean": 187.63,
+    "seq_len_median": 200.0,
+    "seq_len_max": 200,
+    "repeat_interactions": 277077,
+    "time": {
+      "has": true,
+      "n": 884098,
+      "min_date": "2005-08-30",
+      "max_date": "2006-06-07",
+      "min_ts": 1125366635000,
+      "max_ts": 1149649958000
+    },
+    "duration_n": 0,
+    "duration_mean": null,
+    "duration_p50": null
+  },
+  {
+    "dataset": "assist2009",
+    "method": "processed_sequence",
+    "source_files": [
+      "train_valid_sequences.csv",
+      "test_sequences.csv"
+    ],
+    "config_num_q": 17737,
+    "config_num_c": 123,
+    "input_type": "questions,concepts",
+    "max_concepts": 4,
+    "students": 3852,
+    "questions": 17737,
+    "concepts": 123,
+    "interactions": 337415,
+    "correct_rate": 0.6534,
+    "seq_rows": 4661,
+    "seq_len_mean": 72.39,
+    "seq_len_median": 35,
+    "seq_len_max": 200,
+    "repeat_interactions": 54802,
+    "time": {
+      "has": false
+    },
+    "duration_n": 0,
+    "duration_mean": null,
+    "duration_p50": null
+  },
+  {
+    "dataset": "assist2012",
+    "method": "raw_csv",
+    "source_files": [
+      "2012-2013-data-with-predictions-4-final.csv"
+    ],
+    "config_num_q": 53070,
+    "config_num_c": 265,
+    "input_type": "questions,concepts",
+    "max_concepts": 1,
+    "students": 46674,
+    "questions": 179999,
+    "concepts": 265,
+    "interactions": 6123270,
+    "correct_rate": 0.6764,
+    "seq_rows": null,
+    "seq_len_mean": null,
+    "seq_len_median": null,
+    "seq_len_max": null,
+    "repeat_interactions": null,
+    "time": {
+      "has": true,
+      "n": 6123270,
+      "min_date": "2012-09-01",
+      "max_date": "2013-08-31"
+    },
+    "duration_n": 6123257,
+    "duration_mean": 48734.8,
+    "duration_p50": 22331.0
+  },
+  {
+    "dataset": "assist2015",
+    "method": "raw_csv",
+    "source_files": [
+      "2015_100_skill_builders_main_problems.csv"
+    ],
+    "config_num_q": 0,
+    "config_num_c": 100,
+    "input_type": "concepts",
+    "max_concepts": 1,
+    "students": 19917,
+    "questions": 0,
+    "concepts": 100,
+    "interactions": 708631,
+    "correct_rate": 0.7061,
+    "seq_rows": null,
+    "seq_len_mean": null,
+    "seq_len_median": null,
+    "seq_len_max": null,
+    "repeat_interactions": null,
+    "time": {
+      "has": false
+    },
+    "duration_n": 0,
+    "duration_mean": null,
+    "duration_p50": null
+  },
+  {
+    "dataset": "assist2017",
+    "method": "processed_sequence",
+    "source_files": [
+      "train_valid_sequences.csv",
+      "test_sequences.csv"
+    ],
+    "config_num_q": 3162,
+    "config_num_c": 102,
+    "input_type": "questions,concepts",
+    "max_concepts": 1,
+    "students": 1708,
+    "questions": 3162,
+    "concepts": 102,
+    "interactions": 942785,
+    "correct_rate": 0.3727,
+    "seq_rows": 5537,
+    "seq_len_mean": 170.27,
+    "seq_len_median": 200,
+    "seq_len_max": 200,
+    "repeat_interactions": 0,
+    "time": {
+      "has": true,
+      "n": 942785,
+      "min_date": "2004-09-17",
+      "max_date": "2007-05-26",
+      "min_ts": 1095421048000,
+      "max_ts": 1180218370000
+    },
+    "duration_n": 0,
+    "duration_mean": null,
+    "duration_p50": null
+  },
+  {
+    "dataset": "bridge2algebra2006",
+    "method": "processed_sequence",
+    "source_files": [
+      "train_valid_sequences.csv",
+      "test_sequences.csv"
+    ],
+    "config_num_q": 129263,
+    "config_num_c": 493,
+    "input_type": "questions,concepts",
+    "max_concepts": 5,
+    "students": 1145,
+    "questions": 129263,
+    "concepts": 493,
+    "interactions": 1824310,
+    "correct_rate": 0.8321,
+    "seq_rows": 9680,
+    "seq_len_mean": 188.46,
+    "seq_len_median": 200.0,
+    "seq_len_max": 200,
+    "repeat_interactions": 6852,
+    "time": {
+      "has": true,
+      "n": 1824310,
+      "min_date": "2006-10-05",
+      "max_date": "2007-06-20",
+      "min_ts": 1160007976000,
+      "max_ts": 1182317817000
+    },
+    "duration_n": 0,
+    "duration_mean": null,
+    "duration_p50": null
+  },
+  {
+    "dataset": "ednet",
+    "method": "missing_local_files",
+    "source_files": [],
+    "config_num_q": 11901,
+    "config_num_c": 188,
+    "input_type": "questions,concepts",
+    "max_concepts": 7,
+    "students": 0,
+    "questions": 0,
+    "concepts": 0,
+    "interactions": 0,
+    "correct_rate": null,
+    "seq_rows": 0,
+    "seq_len_mean": null,
+    "seq_len_median": null,
+    "seq_len_max": null,
+    "repeat_interactions": null,
+    "time": {
+      "has": false
+    },
+    "duration_n": 0,
+    "duration_mean": null,
+    "duration_p50": null
+  },
+  {
+    "dataset": "junyi2015",
+    "method": "processed_sequence",
+    "source_files": [
+      "train_valid_sequences.csv",
+      "test_sequences.csv"
+    ],
+    "config_num_q": 721,
+    "config_num_c": 39,
+    "input_type": "questions,concepts",
+    "max_concepts": 1,
+    "students": 191874,
+    "questions": 721,
+    "concepts": 39,
+    "interactions": 25853381,
+    "correct_rate": 0.8288,
+    "seq_rows": 281183,
+    "seq_len_mean": 91.95,
+    "seq_len_median": 54,
+    "seq_len_max": 200,
+    "repeat_interactions": 0,
+    "time": {
+      "has": true,
+      "n": 25853381,
+      "min_date": "2012-10-12",
+      "max_date": "2015-01-11",
+      "min_ts": 1350003835131,
+      "max_ts": 1421000065650
+    },
+    "duration_n": 0,
+    "duration_mean": null,
+    "duration_p50": null
+  },
+  {
+    "dataset": "nips_task34",
+    "method": "processed_sequence",
+    "source_files": [
+      "train_valid_sequences.csv",
+      "test_sequences.csv"
+    ],
+    "config_num_q": 948,
+    "config_num_c": 57,
+    "input_type": "questions,concepts",
+    "max_concepts": 2,
+    "students": 4918,
+    "questions": 948,
+    "concepts": 57,
+    "interactions": 1399470,
+    "correct_rate": 0.5364,
+    "seq_rows": 9401,
+    "seq_len_mean": 148.86,
+    "seq_len_median": 190,
+    "seq_len_max": 200,
+    "repeat_interactions": 16792,
+    "time": {
+      "has": true,
+      "n": 1399470,
+      "min_date": "2019-09-06",
+      "max_date": "2020-05-01",
+      "min_ts": 1567749900000,
+      "max_ts": 1588293180000
+    },
+    "duration_n": 0,
+    "duration_mean": null,
+    "duration_p50": null
+  },
+  {
+    "dataset": "peiyou",
+    "method": "processed_sequence",
+    "source_files": [
+      "train_valid_sequences.csv",
+      "pykt_test.csv"
+    ],
+    "config_num_q": 7652,
+    "config_num_c": 865,
+    "input_type": "questions,concepts",
+    "max_concepts": 6,
+    "students": 18066,
+    "questions": 7633,
+    "concepts": 865,
+    "interactions": 5756224,
+    "correct_rate": 0.7941,
+    "seq_rows": 37010,
+    "seq_len_mean": 155.53,
+    "seq_len_median": 200.0,
+    "seq_len_max": 423,
+    "repeat_interactions": 758968,
+    "time": {
+      "has": true,
+      "n": 5756224,
+      "min_date": "2001-01-06",
+      "max_date": "2021-05-29",
+      "min_ts": 978763200000,
+      "max_ts": 1622303847000
+    },
+    "duration_n": 0,
+    "duration_mean": null,
+    "duration_p50": null
+  }
+]

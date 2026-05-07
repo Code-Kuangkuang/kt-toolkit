@@ -1,44 +1,93 @@
 ## KT-Toolkit
 
-面向知识追踪（KT）的研究工具包，涵盖数据预处理、模型训练与多数据集评估流程。
+KT-Toolkit is a PyTorch research toolkit for Knowledge Tracing (KT). It covers
+dataset cleaning, sequence preprocessing, model training, cross-validation,
+experiment logging, and a lightweight WebUI orchestration layer.
 
-## 架构图
+## Architecture
 
-![架构图](docs/arch.png)
+![Architecture](docs/arch.png)
 
-## 快速开始
+The main training path is:
 
-1. 使用 [requirements.txt](requirements.txt) 安装依赖。
-2. 在 [configs/](configs/) 配置数据集与训练参数。
-3. 通过 [scripts/train.py](scripts/train.py) 启动训练。
+```text
+scripts/train.py -> core/train_runner.py -> registry/factory -> datasets/models/trainers -> hooks/artifacts
+```
 
-## 环境准备
+The WebUI does not replace the training core. It starts the existing training
+entrypoint as a managed job and reads metrics/logs from the same artifact
+layout.
 
-- 推荐使用 Python 3.8+。
-- 依赖安装示例：
+## Quick Start
+
+Install the base dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## 数据准备
+Run a single-fold experiment:
 
-- 原始数据位于 [data/](data/)。
-- 预处理脚本位于 [preprocess/](preprocess/)；可根据数据集选择对应脚本运行。
-- 处理后的数据与数据集初始化逻辑位于 [datasets/](datasets/)。
+```bash
+python scripts/train.py --dataset-name assist2009 --model-name dkt --fold 0 --use-wandb 0
+```
 
-## 训练与评估
+Run cross-validation:
 
-- 训练入口： [scripts/train.py](scripts/train.py)
-- 清洗入口： [scripts/run_clean.py](scripts/run_clean.py)
-- 训练配置： [configs/](configs/) 下的 `kt_config.json` 与 `trainer/` 子目录配置。
+```bash
+python scripts/train.py --dataset-name assist2009 --model-name dkt --cv 1 --folds 0-4 --use-wandb 0
+```
 
-## 目录概览
+Start the optional WebUI:
 
-- [models/](models/)：KT 模型实现（如 DKT、SAKT、AKT 等）。
-- [datasets/](datasets/)：数据集初始化与加载逻辑。
-- [preprocess/](preprocess/)：数据预处理脚本。
-- [core/](core/)：训练框架与通用组件。
-- [cleaning/](cleaning/)：数据清洗与适配逻辑。
-- [configs/](configs/)：配置文件。
-- [docs/](docs/)：文档与架构图。
+```bash
+pip install -r requirements-web.txt
+python scripts/serve_web.py --host 127.0.0.1 --port 8000
+```
+
+Then open `http://127.0.0.1:8000`.
+
+## Data Preparation
+
+- Raw and processed dataset files live under `data/`.
+- Dataset-specific cleaning adapters live under `cleaning/adapters/`.
+- Legacy preprocessing and split utilities live under `preprocess/`.
+- Runtime dataset loading is implemented in `datasets/`.
+- Dataset metadata is configured in `configs/data_config.json`.
+
+`KTDataset` and `KTQueDataset` read sequence CSV files and return aligned
+`qseqs`, `cseqs`, `rseqs`, shifted targets, and masks.
+
+Dataset pickle caches are written to `.cache/kt_dataset/` by default instead
+of next to sequence CSV files. Set `KT_DATASET_CACHE_DIR` to override this.
+
+## Configuration
+
+- `configs/kt_config.json`: global training config and model hyperparameters.
+- `configs/data_config.json`: dataset paths, input types, fold ids, and counts.
+- `configs/dataset/*.yaml`: cleaning/preprocessing configs.
+- `configs/wandb.json`: optional W&B credentials and project settings.
+
+## Project Layout
+
+- `core/`: training orchestration, registry, factory, hooks, and base trainer.
+- `core/trainers/`: model-specific trainer implementations.
+- `models/`: KT model implementations registered with `MODEL_REGISTRY`.
+- `datasets/`: PyTorch dataset and dataloader builders.
+- `preprocess/`: sequence generation utilities.
+- `cleaning/`: dataset cleaning pipeline and adapters.
+- `scripts/`: CLI entrypoints.
+- `webui/`: FastAPI + static WebUI orchestration layer.
+- `docs/`: architecture and implementation notes.
+
+## Adding A Model
+
+1. Add `models/your_model.py` and register it with `@MODEL_REGISTRY.register("your_model")`.
+2. Import it in `models/__init__.py` so registration happens at startup.
+3. Add `core/trainers/your_model_trainer.py` and register it with `@TRAINER_REGISTRY.register("your_model")`.
+4. Import the trainer in `core/trainers/__init__.py`.
+5. Add model hyperparameters to `configs/kt_config.json`.
+6. Confirm the dataset `input_type` provides the fields your trainer needs.
+
+Registration is import-driven: if a module is not imported, its decorator will
+not run.
