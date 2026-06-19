@@ -100,7 +100,7 @@ class GBKTV2(GBKT):
         mu_d_all, r_d_all = self.question_difficulty_ball(q_repr_all)
 
         mu_h = self.mu_h0.unsqueeze(0).expand(batch_size, -1)
-        r_h = torch.nn.functional.softplus(self.r_h0).unsqueeze(0).expand(batch_size, -1)
+        r_h = self.initial_student_radius(batch_size, device)
 
         p_list, p_ball_list, p_concept_list = [], [], []
         theta_list, conf_list = [], []

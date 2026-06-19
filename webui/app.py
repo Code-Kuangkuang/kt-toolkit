@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from webui.model_structure import build_model_structure
 from webui.runner import JobRunner, ROOT
 
 
@@ -22,6 +23,8 @@ class CreateJobRequest(BaseModel):
     fold: int = 0
     cv: bool = False
     folds: str = "0-4"
+    cv_run_dir: Optional[str] = None
+    skip_completed: int = 0
     batch_size: Optional[int] = Field(default=None, gt=0)
     num_epochs: Optional[int] = Field(default=None, gt=0)
     learning_rate: Optional[float] = Field(default=None, gt=0)
@@ -31,6 +34,13 @@ class CreateJobRequest(BaseModel):
     seed: int = 3407
     use_wandb: int = 0
     save_dir: Optional[str] = None
+    model_params: Dict[str, Any] = Field(default_factory=dict, alias="model_config")
+
+
+class ModelStructureRequest(BaseModel):
+    dataset_name: str
+    model_name: str
+    emb_type: Optional[str] = None
     model_params: Dict[str, Any] = Field(default_factory=dict, alias="model_config")
 
 
@@ -80,6 +90,17 @@ def stop_job(job_id: str):
     return job
 
 
+@app.delete("/api/jobs/{job_id}")
+def delete_job(job_id: str):
+    try:
+        job = runner.delete_job(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
 @app.get("/api/jobs/{job_id}/log", response_class=PlainTextResponse)
 def get_log(job_id: str, lines: int = Query(default=300, ge=1, le=5000)):
     text = runner.tail_log(job_id, lines=lines)
@@ -94,6 +115,16 @@ def get_metrics(job_id: str):
     if metrics is None:
         raise HTTPException(status_code=404, detail="Job not found")
     return metrics
+
+
+@app.post("/api/model-structure")
+def model_structure(request: ModelStructureRequest):
+    try:
+        return build_model_structure(ROOT, _payload(request))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Could not inspect model: {exc}") from exc
 
 
 @app.get("/api/health")

@@ -49,19 +49,32 @@ class DeepIRT(Module):
         self.e_layer = Linear(self.dim_s, self.dim_s)
         self.a_layer = Linear(self.dim_s, self.dim_s)
 
-    def forward(self, data, return_details=False):
-        qseqs = data["qseqs"]
-        rseqs = data["rseqs"]
-        qshft = data["shft_qseqs"]
-        cshft = data.get("shft_cseqs")
-        rshft = data["shft_rseqs"]
-        sm = data["smasks"]
+    def forward(self, q, r=None, qtest=False, return_details=False):
+        return_shifted = False
+        sm = None
+        if isinstance(q, dict):
+            data = q
+            cseqs = data.get("cseqs")
+            qseqs = data.get("qseqs")
+            cshft = data.get("shft_cseqs")
+            qshft = data.get("shft_qseqs")
+            rseqs = data["rseqs"]
+            rshft = data["shft_rseqs"]
+            sm = data.get("smasks")
 
-        # DeepIRT here uses concept-based memory, so indices should come from cshft.
-        q_idx = cshft if cshft is not None else qshft
-        # Embedding indices must be integer tensors.
-        q = q_idx.long()
-        r = rshft.long()
+            base = cseqs if cseqs is not None and cseqs.numel() > 0 else qseqs
+            base_shft = cshft if cshft is not None and cshft.numel() > 0 else qshft
+            if base is None or base_shft is None:
+                raise ValueError("DeepIRT requires concept or question sequences.")
+            q = torch.cat((base[:, 0:1], base_shft), dim=1)
+            r = torch.cat((rseqs[:, 0:1], rshft), dim=1)
+            return_shifted = True
+
+        if r is None:
+            raise ValueError("DeepIRT requires response sequences.")
+
+        q = q.long()
+        r = r.long()
 
         q_emb_type = self.emb_type
         batch_size = q.shape[0]
@@ -110,9 +123,11 @@ class DeepIRT(Module):
         p = p.squeeze(-1)
 
         # IRT预测 (不做mask，由trainer处理)
-        p = torch.sigmoid(3.0 * stu_ability - que_diff)
-        p = p.squeeze(-1)
+        if return_shifted:
+            p = p[:, 1:]
 
         if return_details:
             return p, sm
-        return p
+        if not qtest:
+            return p
+        return p, f, k

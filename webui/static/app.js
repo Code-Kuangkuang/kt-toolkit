@@ -1,6 +1,7 @@
 let runtimeConfig = null;
 let selectedJobId = null;
 let latestMetricsPayload = null;
+let latestStructurePayload = null;
 let expandedChartType = null;
 let selectedChartView = "";
 
@@ -83,15 +84,23 @@ function renderModelConfig() {
   }
 }
 
+function formatCount(value) {
+  const num = Number(value || 0);
+  if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(2)}M`;
+  if (num >= 1_000) return `${(num / 1_000).toFixed(1)}K`;
+  return String(num);
+}
+
 function readForm() {
   const form = $("#jobForm");
   const data = Object.fromEntries(new FormData(form).entries());
   data.cv = form.elements.cv.checked;
+  data.skip_completed = form.elements.skip_completed.checked ? 1 : 0;
   for (const key of ["fold", "gpu", "seed", "use_wandb", "batch_size", "num_epochs"]) {
     if (data[key] !== undefined && data[key] !== "") data[key] = Number(data[key]);
     else delete data[key];
   }
-  for (const key of ["save_dir", "folds"]) {
+  for (const key of ["save_dir", "folds", "cv_run_dir"]) {
     if (data[key] === "") delete data[key];
   }
 
@@ -114,6 +123,16 @@ function readForm() {
   });
   data.model_config = modelConfig;
   return data;
+}
+
+function readStructureRequest() {
+  const data = readForm();
+  return {
+    dataset_name: data.dataset_name,
+    model_name: data.model_name,
+    emb_type: data.emb_type,
+    model_config: data.model_config || {},
+  };
 }
 
 function statusPill(status) {
@@ -154,9 +173,13 @@ async function loadJobs() {
       <td>${escapeHtml(job.cv ? job.folds : job.fold)}</td>
       <td>${escapeHtml(job.gpu)}</td>
       <td>${escapeHtml(shortTime(job.created_at))}</td>
-      <td><button type="button" data-job="${escapeHtml(job.id)}">Open</button></td>
+      <td class="job-actions">
+        <button type="button" data-job="${escapeHtml(job.id)}">Open</button>
+        <button class="danger-button" type="button" data-delete-job="${escapeHtml(job.id)}">Delete</button>
+      </td>
     `;
     row.querySelector("button").addEventListener("click", () => selectJob(job.id));
+    row.querySelector("[data-delete-job]").addEventListener("click", () => deleteJob(job));
     body.appendChild(row);
   }
 }
@@ -545,6 +568,68 @@ function renderMetrics(payload) {
   }
 }
 
+function renderStructure(payload) {
+  latestStructurePayload = payload;
+  const summary = $("#structureSummary");
+  const modules = payload.modules || [];
+  summary.innerHTML = [
+    metaItem("Model", payload.model_name),
+    metaItem("Dataset", payload.dataset_name),
+    metaItem("BTD", `B=batch, T=${payload.seq_len || "seq"}, D=feature`),
+    metaItem("Params", `${formatCount(payload.trainable_params)} / ${formatCount(payload.total_params)}`),
+    metaItem("num_q", payload.num_q),
+    metaItem("num_c", payload.num_c),
+    metaItem("emb_type", payload.emb_type),
+    metaItem("Layers", modules.length),
+  ].join("");
+
+  const tree = $("#structureTree");
+  tree.innerHTML = "";
+  for (const item of modules) {
+    const row = document.createElement("div");
+    row.className = "structure-row";
+    row.style.setProperty("--depth", String(Math.min(item.depth || 0, 8)));
+    const paramShapes = (item.param_shapes || [])
+      .map((param) => `${param.name}[${param.shape.join("x")}]`)
+      .join(", ");
+    const btd = item.btd || {};
+    row.innerHTML = `
+      <div class="structure-main">
+        <strong title="${escapeHtml(item.path)}">${escapeHtml(item.path)}</strong>
+        <span>${escapeHtml(item.type)}</span>
+      </div>
+      <div class="structure-btd">
+        <span>${escapeHtml(btd.input || "-")}</span>
+        <span>-&gt;</span>
+        <span>${escapeHtml(btd.output || "-")}</span>
+      </div>
+      <div class="structure-extra">
+        <span>${escapeHtml(btd.detail || "")}</span>
+        <span>${escapeHtml(paramShapes)}</span>
+        <span>${formatCount(item.own_trainable_params)} params</span>
+      </div>
+    `;
+    tree.appendChild(row);
+  }
+  $("#structureRepr").textContent = payload.repr || "";
+}
+
+async function inspectStructure() {
+  $("#structureStatus").textContent = "Inspecting...";
+  try {
+    const payload = await api("/api/model-structure", {
+      method: "POST",
+      body: JSON.stringify(readStructureRequest()),
+    });
+    $("#structureStatus").textContent = `${payload.modules.length} layers, ${formatCount(payload.total_params)} params`;
+    renderStructure(payload);
+  } catch (error) {
+    $("#structureStatus").textContent = "Inspect failed";
+    $("#structureTree").textContent = error.message;
+    $("#structureRepr").textContent = "";
+  }
+}
+
 async function submitJob(event) {
   event.preventDefault();
   $("#submitStatus").textContent = "Submitting...";
@@ -569,6 +654,28 @@ async function stopSelectedJob() {
   await loadDetail();
 }
 
+function clearDetail() {
+  selectedJobId = null;
+  $("#reloadDetailBtn").disabled = true;
+  $("#stopBtn").disabled = true;
+  $("#detailMeta").innerHTML = "";
+  $("#logBox").textContent = "";
+  $("#metricsList").textContent = "No job selected.";
+  renderCharts({ runs: [] });
+}
+
+async function deleteJob(job) {
+  const ok = window.confirm(`Delete experiment ${job.id} and its artifact folder?\n\n${job.save_dir}`);
+  if (!ok) return;
+  try {
+    await api(`/api/jobs/${job.id}`, { method: "DELETE" });
+    if (selectedJobId === job.id) clearDetail();
+    await loadJobs();
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
 async function refreshAll() {
   await loadJobs();
   if (selectedJobId) await loadDetail();
@@ -577,6 +684,7 @@ async function refreshAll() {
 async function boot() {
   $("#jobForm").addEventListener("submit", submitJob);
   $("#jobForm select[name='model_name']").addEventListener("change", renderModelConfig);
+  $("#inspectStructureBtn").addEventListener("click", inspectStructure);
   $("#refreshBtn").addEventListener("click", refreshAll);
   $("#reloadDetailBtn").addEventListener("click", loadDetail);
   $("#stopBtn").addEventListener("click", stopSelectedJob);

@@ -51,6 +51,12 @@ class GBKT(nn.Module):
         dropout=0.2,
         init_radius=0.5,
         eps=1e-6,
+        use_bbp_radius_normalization=True,
+        use_radius_discrimination=True,
+        use_kab_radius_features=True,
+        use_radius_state_update=True,
+        use_point_space=False,
+        response_function="irt",
         **kwargs,
     ):
         super().__init__()
@@ -62,6 +68,19 @@ class GBKT(nn.Module):
         self.d_g = int(d_g)
         self.d_p = int(d_p)
         self.eps = float(eps)
+        self.use_bbp_radius_normalization = bool(use_bbp_radius_normalization)
+        self.use_radius_discrimination = bool(use_radius_discrimination)
+        self.use_kab_radius_features = bool(use_kab_radius_features)
+        self.use_radius_state_update = bool(use_radius_state_update)
+        self.use_point_space = bool(use_point_space)
+        if self.use_point_space:
+            self.use_bbp_radius_normalization = False
+            self.use_radius_discrimination = False
+            self.use_kab_radius_features = False
+            self.use_radius_state_update = False
+        self.response_function = str(response_function).lower()
+        if self.response_function not in {"irt", "mlp"}:
+            raise ValueError(f"Unsupported GBKT response_function: {response_function}")
 
         # Embeddings.
         self.question_emb = nn.Embedding(self.num_q + 1, self.emb_size, padding_idx=self.num_q)
@@ -103,6 +122,12 @@ class GBKT(nn.Module):
         self.W_a = nn.Linear(self.d_p, 1)
         self.W_conf = nn.Linear(self.d_p, 1)
         self.W_shortcut = nn.Linear(4 * self.d_p, 1)
+        self.response_mlp = nn.Sequential(
+            nn.Linear(6 * self.d_p, self.d_p),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(self.d_p, 1),
+        )
 
         # KAB: Knowledge Acquisition Ball.
         self.W_pl = nn.Sequential(
@@ -151,8 +176,15 @@ class GBKT(nn.Module):
 
     def question_difficulty_ball(self, q_repr):
         mu_d = self.W_mu_d(q_repr)
+        if self.use_point_space:
+            return mu_d, torch.ones_like(mu_d)
         r_d = F.softplus(self.W_r_d(q_repr))
         return mu_d, r_d
+
+    def initial_student_radius(self, batch_size, device):
+        if self.use_point_space:
+            return torch.ones(batch_size, self.d_h, device=device)
+        return F.softplus(self.r_h0).unsqueeze(0).expand(batch_size, -1)
 
     def _project_balls(self, mu_h, r_h, mu_d, r_d):
         mu_h_p = self.W_proj_h(mu_h)
@@ -161,22 +193,49 @@ class GBKT(nn.Module):
         r_d_p = F.softplus(self.W_proj_rd(r_d))
         return mu_h_p, r_h_p, mu_d_p, r_d_p
 
+    def _effective_diff(self, center_diff, radius_sum, use_radius=True):
+        if use_radius:
+            return center_diff / (radius_sum + self.eps)
+        return center_diff
+
+    def _radius_feature(self, radius_sum, use_radius=True):
+        if use_radius:
+            return radius_sum
+        return torch.zeros_like(radius_sum)
+
+    def _radius_control_input(self, center_diff, radius_sum):
+        if self.use_radius_discrimination:
+            return -radius_sum
+        return center_diff
+
     def ball_to_ball_predict(self, mu_h, r_h, mu_d, r_d):
         mu_h_p, r_h_p, mu_d_p, r_d_p = self._project_balls(mu_h, r_h, mu_d, r_d)
 
         center_diff = mu_h_p - mu_d_p
         radius_sum = r_h_p + r_d_p
-        effective_diff = center_diff / (radius_sum + self.eps)
+        effective_diff = self._effective_diff(
+            center_diff,
+            radius_sum,
+            use_radius=self.use_bbp_radius_normalization,
+        )
+        radius_control = self._radius_control_input(center_diff, radius_sum)
 
         theta = self.W_theta(effective_diff).squeeze(-1)
         b = self.W_b(center_diff).squeeze(-1)
-        a = F.softplus(self.W_a(-radius_sum)).squeeze(-1)
-        confidence = torch.sigmoid(self.W_conf(-radius_sum).squeeze(-1))
+        a = F.softplus(self.W_a(radius_control)).squeeze(-1)
+        confidence = torch.sigmoid(self.W_conf(radius_control).squeeze(-1))
 
         logit_irt = a * (theta - b)
         shortcut_input = torch.cat([mu_h_p, mu_d_p, center_diff, mu_h_p * mu_d_p], dim=-1)
         shortcut = self.W_shortcut(shortcut_input).squeeze(-1)
-        logit = logit_irt + 0.1 * shortcut
+        if self.response_function == "mlp":
+            mlp_input = torch.cat(
+                [mu_h_p, mu_d_p, center_diff, mu_h_p * mu_d_p, radius_sum, effective_diff],
+                dim=-1,
+            )
+            logit = self.response_mlp(mlp_input).squeeze(-1)
+        else:
+            logit = logit_irt + 0.1 * shortcut
         p_hat = torch.sigmoid(logit)
 
         return {
@@ -197,14 +256,19 @@ class GBKT(nn.Module):
 
         center_diff = mu_h_p - mu_d_p
         radius_sum = r_h_p + r_d_p
-        effective_diff = center_diff / (radius_sum + self.eps)
+        effective_diff = self._effective_diff(
+            center_diff,
+            radius_sum,
+            use_radius=self.use_kab_radius_features,
+        )
+        radius_feature = self._radius_feature(radius_sum, use_radius=self.use_kab_radius_features)
 
         r_idx = self._response_to_index(r_t)
         sign = r_idx.float().mul(2.0).sub(1.0).unsqueeze(-1)
         pl_input = torch.cat([
             sign * center_diff,
             effective_diff,
-            radius_sum,
+            radius_feature,
             sign,
         ], dim=-1)
         plausibility = torch.sigmoid(self.W_pl(pl_input))
@@ -234,6 +298,8 @@ class GBKT(nn.Module):
 
         gamma_input = torch.cat([mu_h, r_h, q_repr + e_r], dim=-1)
         gamma = torch.sigmoid(self.W_gamma(gamma_input))
+        if not self.use_radius_state_update:
+            return mu_h_next, r_h
         r_h_next = (1.0 - gamma * c_key) * r_h + (gamma * c_key) * r_delta
         return mu_h_next, r_h_next
 
@@ -264,7 +330,7 @@ class GBKT(nn.Module):
         mu_d_all, r_d_all = self.question_difficulty_ball(q_repr_all)
 
         mu_h = self.mu_h0.unsqueeze(0).expand(batch_size, -1)
-        r_h = F.softplus(self.r_h0).unsqueeze(0).expand(batch_size, -1)
+        r_h = self.initial_student_radius(batch_size, device)
 
         p_list, theta_list, conf_list = [], [], []
         r_h_list, r_d_list = [], []

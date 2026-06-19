@@ -65,18 +65,30 @@ class UKTTrainer(BaseTrainer):
         if masks is not None:
             masks = masks.to(self.device)
         pidseqs = batch.get("pidseqs")
+        pidshft = batch.get("shft_pidseqs")
+
+        qseqs = qseqs if qseqs is not None and qseqs.numel() > 0 else None
+        qshft = qshft if qshft is not None and qshft.numel() > 0 else None
+        cseqs = cseqs if cseqs is not None and cseqs.numel() > 0 else None
+        cshft = cshft if cshft is not None and cshft.numel() > 0 else None
+        pidseqs = pidseqs if pidseqs is not None and pidseqs.numel() > 0 else None
+        pidshft = pidshft if pidshft is not None and pidshft.numel() > 0 else None
 
         base_seqs = cseqs if cseqs is not None and cseqs.numel() > 0 else qseqs
         base_shft = cshft if cshft is not None and cshft.numel() > 0 else qshft
 
         if base_seqs is None or base_seqs.numel() == 0:
             raise ValueError("UKTTrainer requires question or concept sequences.")
+        if base_shft is None or base_shft.numel() == 0:
+            raise ValueError("UKTTrainer requires shifted question or concept sequences.")
 
         base_seqs = base_seqs.to(self.device).long()
         base_shft = base_shft.to(self.device).long()
 
         if pidseqs is not None:
             pidseqs = pidseqs.to(self.device).long()
+        if pidshft is not None:
+            pidshft = pidshft.to(self.device).long()
 
         if train and self.model.use_CL and self.model.use_uncertainty_aug:
             shft_r_aug = batch.get("shft_r_aug")
@@ -97,6 +109,7 @@ class UKTTrainer(BaseTrainer):
             cshft=base_shft,
             rshft=rshft,
             pidseqs=pidseqs,
+            pidshft=pidshft,
             masks=masks,
             train=train,
             shft_r_aug=shft_r_aug,
@@ -105,15 +118,27 @@ class UKTTrainer(BaseTrainer):
 
         if train and self.model.use_CL:
             preds, cl_loss, temp = result
-            bce_loss = cal_loss(preds, rshft, sm)
-            loss = bce_loss + self.cl_weight * cl_loss
+            preds_for_loss = _align_shifted_preds(preds, rshft)
+            bce_loss = cal_loss(preds_for_loss, rshft, sm)
+            loss = bce_loss + getattr(self.model, "cl_weight", self.cl_weight) * cl_loss
         else:
             preds = result
-            loss = cal_loss(preds, rshft, sm)
+            preds_for_loss = _align_shifted_preds(preds, rshft)
+            loss = cal_loss(preds_for_loss, rshft, sm)
 
-        pred = torch.masked_select(preds, sm)
+        pred = torch.masked_select(preds_for_loss, sm)
         target = torch.masked_select(rshft, sm)
         return pred, target, loss
+
+
+def _align_shifted_preds(preds, rshft):
+    preds_for_loss = preds[:, 1:] if preds.size(1) == rshft.size(1) + 1 else preds
+    if preds_for_loss.shape != rshft.shape:
+        raise ValueError(
+            f"UKT prediction shape {tuple(preds.shape)} does not align "
+            f"with shifted targets {tuple(rshft.shape)}."
+        )
+    return preds_for_loss
 
 
 def cal_loss(preds, rshft, sm):

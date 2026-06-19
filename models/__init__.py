@@ -15,11 +15,24 @@ from .deep_irt import DeepIRT
 from .saint import SAINT
 from .saint_plus import SAINTp
 from .gbkt import GBKT
-from .gbkt_svm_aux import GBKTSVMAux
 from .gbsvkt import GBSVKT
 from .gbktv2 import GBKTV2
-from .gbsvkt_fix import GBSVKTFix
+from .gbktv3 import GBKTV3
+from .gbktv4 import GBKTV4
+from .gbkt_final import GBKTFinal
+from .cgbkt import CGBKT
 from .simplekt import SimpleKT
 from .ukt import UKT
+from .dkt_forget import DKTForget
+from .skvmn import SKVMN
+from .dimkt import DIMKT
+from .atdkt import ATDKT
+from .stablekt import StableKT
+from .sparsekt import SparseKT
+from .dtransformer import DTransformerModel
+from .robustkt import RobustKT
+from .rekt import ReKT
+from .lefokt_akt import LEFOKT_AKT
+from .hqaf import HQAFKT
 
-__all__ = ["DKT", "DKTPEBG", "DKVMN", "AKT", "DKTPlus", "SAKT", "QIKTNet", "GKT", "KQN", "ATKT", "IEKT", "HawkesKT", "LPKT", "DeepIRT", "SAINT", "SAINTp", "GBKT", "GBKTSVMAux", "GBKTV2","GBSVKT", "GBSVKTFix", "SimpleKT", "UKT"]
+__all__ = ["DKT", "DKTPEBG", "DKVMN", "AKT", "DKTPlus", "SAKT", "QIKTNet", "GKT", "KQN", "ATKT", "IEKT", "HawkesKT", "LPKT", "DeepIRT", "SAINT", "SAINTp", "GBKT", "GBKTV2", "GBKTV3", "GBKTV4", "GBKTFinal", "CGBKT", "GBSVKT", "SimpleKT", "UKT", "DKTForget", "SKVMN", "DIMKT", "ATDKT", "StableKT", "SparseKT", "DTransformerModel", "RobustKT", "ReKT", "LEFOKT_AKT", "HQAFKT"]

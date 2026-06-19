@@ -26,14 +26,16 @@ class transformer_FFN(Module):
         return self.FFN(in_fea)
 
 
-def ut_mask(seq_len):
+def ut_mask(seq_len, target_device=None):
     """Upper Triangular Mask"""
-    return torch.triu(torch.ones(seq_len, seq_len), diagonal=1).to(dtype=torch.bool).to(device)
+    target_device = target_device or device
+    return torch.triu(torch.ones(seq_len, seq_len), diagonal=1).to(dtype=torch.bool).to(target_device)
 
 
-def pos_encode(seq_len):
+def pos_encode(seq_len, target_device=None):
     """Position Encoding"""
-    return torch.arange(seq_len).unsqueeze(0).to(device)
+    target_device = target_device or device
+    return torch.arange(seq_len).unsqueeze(0).to(target_device)
 
 
 def get_clones(module, N):
@@ -91,7 +93,7 @@ class Encoder_block(nn.Module):
         n, _, _ = out.shape
         out = self.layer_norm1(out)
         skip_out = out
-        out, attn_wt = self.multi_en(out, out, out, attn_mask=ut_mask(seq_len=n))
+        out, attn_wt = self.multi_en(out, out, out, attn_mask=ut_mask(seq_len=n, target_device=out.device))
         out = self.dropout1(out)
         out = out + skip_out
 
@@ -135,14 +137,14 @@ class Decoder_block(nn.Module):
 
         out = self.layer_norm1(out)
         skip_out = out
-        out, attn_wt = self.multi_de1(out, out, out, attn_mask=ut_mask(seq_len=n))
+        out, attn_wt = self.multi_de1(out, out, out, attn_mask=ut_mask(seq_len=n, target_device=out.device))
         out = self.dropout1(out)
         out = skip_out + out
 
         en_out = en_out.permute(1, 0, 2)
         en_out = self.layer_norm2(en_out)
         skip_out = out
-        out, attn_wt = self.multi_de2(out, en_out, en_out, attn_mask=ut_mask(seq_len=n))
+        out, attn_wt = self.multi_de2(out, en_out, en_out, attn_mask=ut_mask(seq_len=n, target_device=out.device))
         out = self.dropout2(out)
         out = out + skip_out
 
@@ -200,18 +202,21 @@ class SAINT(nn.Module):
         rseqs = data["rseqs"]
         qshft = data["shft_qseqs"]
         cshft = data.get("shft_cseqs")
-        rshft = data["shft_rseqs"]
         sm = data["smasks"]
 
-        in_ex = qshft
-        in_cat = cshft if cshft is not None else qshft
-        # Response ids are stored as float for BCE targets in dataset; embeddings require integer indices.
-        in_res = rshft.long()
+        in_ex = torch.cat((qseqs[:, 0:1], qshft), dim=1) if qseqs is not None else qshft
+        if cseqs is not None and cshft is not None:
+            in_cat = torch.cat((cseqs[:, 0:1], cshft), dim=1)
+        else:
+            in_cat = in_ex
+        # Match pykt SAINT teacher forcing: encoder uses full q/c sequence,
+        # decoder uses [START, r_0, ..., r_{T-1}], then output[:, 1:].
+        in_res = rseqs.long()
 
         if self.num_q > 0:
-            in_pos = pos_encode(in_ex.shape[1])
+            in_pos = pos_encode(in_ex.shape[1], target_device=in_ex.device)
         else:
-            in_pos = pos_encode(in_cat.shape[1])
+            in_pos = pos_encode(in_cat.shape[1], target_device=in_cat.device)
         in_pos = in_pos.clamp(max=self.embd_pos.num_embeddings - 1)
         in_pos = self.embd_pos(in_pos)
 
@@ -224,8 +229,7 @@ class SAINT(nn.Module):
             in_cat = in_ex
 
         start_token = torch.tensor([[2]], dtype=in_res.dtype, device=in_res.device).repeat(in_res.shape[0], 1)
-        # Teacher forcing input: [START, r_1, ..., r_{t-1}] so decoder length stays aligned with encoder/targets.
-        in_res = torch.cat((start_token, in_res[:, :-1]), dim=-1)
+        in_res = torch.cat((start_token, in_res), dim=-1)
 
         first_block = True
         for i in range(self.num_de):
@@ -235,6 +239,7 @@ class SAINT(nn.Module):
 
         res = self.out(self.dropout(in_res))
         res = torch.sigmoid(res).squeeze(-1)
+        res = res[:, 1:]
 
         if return_details:
             return res, sm

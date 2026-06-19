@@ -107,10 +107,10 @@ class GKT(nn.Module):
             self.graph.requires_grad = False
 
         # One-hot features
-        one_hot_feat = torch.eye(self.res_len * self.num_c).to(device)
+        one_hot_feat = torch.eye(self.res_len * self.num_c)
         self.register_buffer("one_hot_feat", one_hot_feat)
-        one_hot_q = torch.eye(self.num_c).to(device)
-        zero_padding = torch.zeros(1, self.num_c).to(device)
+        one_hot_q = torch.eye(self.num_c)
+        zero_padding = torch.zeros(1, self.num_c)
         one_hot_q = torch.cat((one_hot_q, zero_padding), dim=0)
         self.register_buffer("one_hot_q", one_hot_q)
 

@@ -8,7 +8,7 @@ import torch.nn as nn
 from core.registry import MODEL_REGISTRY
 
 
-def generate_qmatrix(dpath, num_q, num_c, gamma=0.03):
+def generate_qmatrix(dpath, num_q, num_c, gamma=0.0):
     """Generate Q-matrix from raw data.
 
     Args:
@@ -111,11 +111,10 @@ class LPKT(nn.Module):
         # Q-matrix: load from file or generate
         if q_matrix is not None:
             self.q_matrix = torch.tensor(q_matrix, dtype=torch.float) if not torch.is_tensor(q_matrix) else q_matrix.float()
-            self.q_matrix[self.q_matrix == 0] = gamma
         else:
             from .lpkt import generate_qmatrix
-            self.q_matrix = generate_qmatrix(dpath, num_q, num_c, gamma)
-            self.q_matrix = torch.tensor(self.q_matrix, dtype=torch.float)
+            self.q_matrix = torch.tensor(generate_qmatrix(dpath, num_q, num_c, gamma=0.0), dtype=torch.float)
+        self.q_matrix[self.q_matrix == 0] = gamma
 
         self.emb_type = emb_type
         self.use_time = use_time
@@ -175,6 +174,8 @@ class LPKT(nn.Module):
         # Time embeddings
         at_embed_data = None
         it_embed_data = None
+        if self.use_time and it_data is None:
+            raise ValueError("LPKT requires it_data when use_time=True.")
         if self.use_time and at_data is not None:
             at_embed_data = self.at_embed(at_data)
         if self.use_time and it_data is not None:
@@ -270,7 +271,7 @@ class LPKT(nn.Module):
             )
             h_tilde = q_matrix[e_next].view(batch_size, 1, -1).bmm(h).view(batch_size, self.d_k) / c_tilde
 
-            y = self.sig(self.linear_5(torch.cat((e_embed_data[:, t + 1], h_tilde), 1)).sum(1) / self.d_k)
+            y = self.sig(self.linear_5(torch.cat((e_embed_data[:, t + 1], h_tilde), 1))).sum(1) / self.d_k
             pred[:, t + 1] = y
             hidden_state[:, t + 1, :] = h_tilde
 

@@ -42,6 +42,14 @@
             Folds
             <input name="folds" value="0-4" />
           </label>
+          <label class="inline-field">
+            <input name="skip_completed" type="checkbox" />
+            Skip completed
+          </label>
+          <label class="full">
+            CV Run Dir
+            <input name="cv_run_dir" placeholder="saved_model/cv-dataset-model-YYYYMMDD-HHMMSS" />
+          </label>
           <label>
             Epochs
             <input name="num_epochs" type="number" min="1" placeholder="config" />
@@ -96,11 +104,32 @@
                 <th>Fold</th>
                 <th>GPU</th>
                 <th>Created</th>
-                <th></th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody id="jobsBody"></tbody>
           </table>
+        </div>
+      </section>
+
+      <section class="panel structure-panel">
+        <div class="section-title">
+          <div>
+            <h2>Model Structure</h2>
+            <span id="structureStatus">Inspect the selected dataset/model.</span>
+          </div>
+          <button id="inspectStructureBtn" type="button">Inspect Structure</button>
+        </div>
+        <div id="structureSummary" class="structure-summary"></div>
+        <div class="structure-grid">
+          <section>
+            <h3>Layer Tree</h3>
+            <div id="structureTree" class="structure-tree"></div>
+          </section>
+          <section>
+            <h3>Raw Module Repr</h3>
+            <pre id="structureRepr" class="structure-repr"></pre>
+          </section>
         </div>
       </section>
 

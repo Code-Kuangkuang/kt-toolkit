@@ -54,42 +54,36 @@ class GKTTrainer(BaseTrainer):
         return float(np.mean(losses)) if losses else 0.0
 
     def _forward_batch(self, batch):
-        qseqs = batch.get("qseqs")
         cseqs = batch.get("cseqs")
         rseqs = batch["rseqs"].to(self.device).long()
-        qshft = batch.get("shft_qseqs")
         cshft = batch.get("shft_cseqs")
         rshft = batch["shft_rseqs"].to(self.device).float()
         sm = batch["smasks"].to(self.device)
-
-        masks = batch.get("masks")
 
         # IMPORTANT: GKT expects concept/skill ids in range [0, num_c-1].
         # Using question ids (qseqs) will create out-of-range interaction indices (q*2+r) and crash on CUDA.
         if cseqs is None or cseqs.numel() == 0:
             raise ValueError("GKTTrainer requires concept sequences (cseqs).")
+        if cshft is None or cshft.numel() == 0:
+            raise ValueError("GKTTrainer requires shifted concept sequences (shft_cseqs).")
 
-        base_seqs = cseqs.to(self.device).long()
-        if masks is not None and masks.numel() > 0:
-            base_seqs = base_seqs.masked_fill(~masks.to(self.device), -1)
+        cseqs = self._first_concept(cseqs).to(self.device).long()
+        cshft = self._first_concept(cshft).to(self.device).long()
+        cc = torch.cat((cseqs[:, 0:1], cshft), dim=1)
+        cr = torch.cat((rseqs[:, 0:1], rshft.long()), dim=1)
 
-        # Forward through GKT model
-        preds = self.model(base_seqs, rseqs)
-
-        # GKT returns next-step predictions of length (T-1) for input length T.
-        # Our dataset batches already use shifted sequences of length T, so we
-        # need to align everything to the common valid length.
-        common_len = min(preds.size(1), rshft.size(1), sm.size(1))
-        preds = preds[:, :common_len]
-        rshft = rshft[:, :common_len]
-        sm = sm[:, :common_len]
-
-        # Compute loss
+        preds = self.model(cc, cr)
         loss = cal_loss(self.model, [preds], rseqs, rshft, sm)
 
         pred = torch.masked_select(preds, sm)
         target = torch.masked_select(rshft, sm)
         return pred, target, loss
+
+    @staticmethod
+    def _first_concept(seqs):
+        if seqs.dim() == 3:
+            return seqs[..., 0]
+        return seqs
 
 
 def cal_loss(model, ys, r, rshft, sm, preloss=None):

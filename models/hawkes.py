@@ -32,6 +32,8 @@ class HawkesKT(nn.Module):
         self.emb_type = emb_type
         self.problem_num = num_q
         self.skill_num = num_c
+        if self.problem_num <= 0:
+            raise ValueError("HawkesKT requires question/problem ids; num_q must be positive.")
         self.emb_size = emb_size
         self.time_log = time_log
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

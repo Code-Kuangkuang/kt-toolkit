@@ -60,19 +60,31 @@ class SimpleKTTrainer(BaseTrainer):
         rshft = batch["shft_rseqs"].to(self.device).float()
         sm = batch["smasks"].to(self.device)
         pidseqs = batch.get("pidseqs")
+        pidshft = batch.get("shft_pidseqs")
+
+        qseqs = qseqs if qseqs is not None and qseqs.numel() > 0 else None
+        qshft = qshft if qshft is not None and qshft.numel() > 0 else None
+        cseqs = cseqs if cseqs is not None and cseqs.numel() > 0 else None
+        cshft = cshft if cshft is not None and cshft.numel() > 0 else None
+        pidseqs = pidseqs if pidseqs is not None and pidseqs.numel() > 0 else None
+        pidshft = pidshft if pidshft is not None and pidshft.numel() > 0 else None
 
         base_seqs = cseqs if cseqs is not None and cseqs.numel() > 0 else qseqs
         base_shft = cshft if cshft is not None and cshft.numel() > 0 else qshft
 
         if base_seqs is None or base_seqs.numel() == 0:
             raise ValueError("SimpleKTTrainer requires question or concept sequences.")
+        if base_shft is None or base_shft.numel() == 0:
+            raise ValueError("SimpleKTTrainer requires shifted question or concept sequences.")
 
         base_seqs = base_seqs.to(self.device).long()
         base_shft = base_shft.to(self.device).long()
 
-        # Prepare pidseqs
+        # Prepare optional explicit problem-id sequences.
         if pidseqs is not None:
             pidseqs = pidseqs.to(self.device).long()
+        if pidshft is not None:
+            pidshft = pidshft.to(self.device).long()
 
         preds = self.model(
             qseqs=qseqs.to(self.device).long() if qseqs is not None else None,
@@ -82,10 +94,17 @@ class SimpleKTTrainer(BaseTrainer):
             cshft=base_shft,
             rshft=rshft,
             pidseqs=pidseqs,
+            pidshft=pidshft,
         )
+        preds_for_loss = preds[:, 1:] if preds.size(1) == rshft.size(1) + 1 else preds
+        if preds_for_loss.shape != rshft.shape:
+            raise ValueError(
+                f"SimpleKT prediction shape {tuple(preds.shape)} does not align "
+                f"with shifted targets {tuple(rshft.shape)}."
+            )
 
-        loss = cal_loss(preds, rshft, sm)
-        pred = torch.masked_select(preds, sm)
+        loss = cal_loss(preds_for_loss, rshft, sm)
+        pred = torch.masked_select(preds_for_loss, sm)
         target = torch.masked_select(rshft, sm)
         return pred, target, loss
 

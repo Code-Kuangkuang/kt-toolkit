@@ -3,6 +3,7 @@ import datetime
 import os
 import uuid
 
+import numpy as np
 import torch
 from rich import print
 
@@ -18,7 +19,54 @@ from core.run_support import (
     save_run_config,
     set_seed,
 )
+from datasets.lpkt_utils import generate_time2idx
+from datasets.feature_utils import (
+    compute_dkt_forget_stats,
+    compute_dimkt_difficulty_maps,
+    compute_hqaf_feature_maps,
+)
+from models.gkt_utils import get_gkt_graph
 from strategies import apply_dkt_pebg_strategy
+
+
+MODEL_NAME_ALIASES = {
+    "dkt-forget": "dkt_forget",
+    "gbkt-final": "gbkt_final",
+    "gbkt-coverage": "cgbkt",
+    "gbktv5": "cgbkt",
+    "lefokt": "lefokt_akt",
+    "hqaf-kt": "hqaf",
+    "hqaf_kt": "hqaf",
+}
+QUESTION_REQUIRED_MODELS = {"atdkt", "dimkt", "stablekt", "sparsekt", "robustkt", "dtransformer", "rekt", "lefokt_akt", "hqaf"}
+ALL_IN_ONE_MODELS = {
+    "lpkt",
+    "atdkt",
+    "dimkt",
+    "stablekt",
+    "sparsekt",
+    "robustkt",
+    "dtransformer",
+    "dkt_forget",
+    "skvmn",
+    "rekt",
+    "lefokt_akt",
+    "hqaf",
+    "cgbkt",
+}
+ONE_BY_ONE_MODELS = {"hawkes"}
+
+
+def _resolve_existing_sequence_filename(dataset_cfg, primary_key, fallback_key):
+    """Return the filename that the dataset builder will actually load."""
+    primary_name = dataset_cfg.get(primary_key) or dataset_cfg.get(fallback_key)
+    fallback_name = dataset_cfg.get(fallback_key)
+    for filename in (primary_name, fallback_name):
+        if not filename:
+            continue
+        if os.path.exists(os.path.join(dataset_cfg["dpath"], filename)):
+            return filename
+    return primary_name or fallback_name
 
 
 def train_one_fold(
@@ -41,6 +89,7 @@ def train_one_fold(
     overrides,
     gpu_id=0,
 ):
+    model_name = MODEL_NAME_ALIASES.get(model_name.lower(), model_name.lower())
     kt_cfg = copy.deepcopy(kt_cfg_raw)
     train_cfg_local = kt_cfg["train_config"]
     model_cfg_local = kt_cfg[model_name]
@@ -61,6 +110,11 @@ def train_one_fold(
             dpath = os.path.join(root_dir, dpath)
         dataset_cfg_local["dpath"] = os.path.normpath(dpath)
 
+    if model_name in ALL_IN_ONE_MODELS:
+        train_cfg_local["dataset_mode"] = "all_in_one"
+    elif model_name in ONE_BY_ONE_MODELS:
+        train_cfg_local["dataset_mode"] = "one_by_one"
+
     booster_info = None
     if model_name == "dkt_pebg":
         model_cfg_local, booster_info = apply_dkt_pebg_strategy(
@@ -77,12 +131,109 @@ def train_one_fold(
             f"emb_path={booster_info.get('emb_path', '')}"
         )
 
+    lpkt_time_idx_maps = None
+    if model_name == "lpkt":
+        at2idx, it2idx = generate_time2idx(dataset_cfg_local)
+        lpkt_time_idx_maps = {"at2idx": at2idx, "it2idx": it2idx}
+        dataset_cfg_local["num_at"] = len(at2idx) + 1
+        dataset_cfg_local["num_it"] = len(it2idx) + 1
+        model_cfg_local["num_at"] = dataset_cfg_local["num_at"]
+        model_cfg_local["num_it"] = dataset_cfg_local["num_it"]
+    if model_name == "hawkes" and dataset_cfg_local.get("num_q", 0) <= 0:
+        raise ValueError(
+            f"Hawkes requires question ids, but dataset {dataset_name} has num_q={dataset_cfg_local.get('num_q')}."
+        )
+    if model_name in QUESTION_REQUIRED_MODELS and (
+        "questions" not in dataset_cfg_local.get("input_type", []) or dataset_cfg_local.get("num_q", 0) <= 0
+    ):
+        raise ValueError(
+            f"{model_name} requires question ids, but dataset {dataset_name} has "
+            f"input_type={dataset_cfg_local.get('input_type')} and num_q={dataset_cfg_local.get('num_q')}."
+        )
+    dimkt_difficulty_maps = None
+    hqaf_feature_maps = None
+    if model_name == "dkt_forget":
+        train_valid_key = "train_valid_file_quelevel" if train_cfg_local.get("dataset_mode") == "all_in_one" else "train_valid_file"
+        test_key = "test_file_quelevel" if train_cfg_local.get("dataset_mode") == "all_in_one" else "test_file"
+        gap_files = [
+            _resolve_existing_sequence_filename(dataset_cfg_local, train_valid_key, "train_valid_file"),
+            _resolve_existing_sequence_filename(dataset_cfg_local, test_key, "test_file"),
+        ]
+        gap_stats = compute_dkt_forget_stats(
+            dataset_cfg_local["dpath"],
+            gap_files,
+            dataset_cfg_local["input_type"],
+        )
+        model_cfg_local.update(gap_stats)
+        dataset_cfg_local.update(gap_stats)
+        model_cfg_local["use_timestamps"] = True
+    elif model_name == "dimkt":
+        difficult_levels = int(model_cfg_local.get("difficult_levels", model_cfg_local.get("diff_level", 100)))
+        model_cfg_local["difficult_levels"] = difficult_levels
+        model_cfg_local["batch_size"] = train_cfg_local["batch_size"]
+        model_cfg_local["num_steps"] = train_cfg_local.get("seq_len", 200)
+        difficulty_file_key = "train_valid_file_quelevel" if train_cfg_local.get("dataset_mode") == "all_in_one" else "train_valid_file"
+        difficulty_file = _resolve_existing_sequence_filename(
+            dataset_cfg_local,
+            difficulty_file_key,
+            "train_valid_file",
+        )
+        dimkt_difficulty_maps = compute_dimkt_difficulty_maps(
+            dataset_cfg_local["dpath"],
+            difficulty_file,
+            difficult_levels,
+        )
+    elif model_name == "hqaf":
+        diff_level = int(model_cfg_local.get("diff_level", model_cfg_local.get("difficult_levels", 50)))
+        num_time_bins = int(model_cfg_local.get("num_time_bins", 20))
+        model_cfg_local["diff_level"] = diff_level
+        model_cfg_local["num_time_bins"] = num_time_bins
+        model_cfg_local["num_type"] = int(dataset_cfg_local.get("num_type", model_cfg_local.get("num_type", 16)))
+        train_file_key = "train_valid_file_quelevel" if train_cfg_local.get("dataset_mode") == "all_in_one" else "train_valid_file"
+        train_folds = sorted(set(dataset_cfg_local.get("folds", [])) - {fold_id})
+        hqaf_feature_maps = compute_hqaf_feature_maps(
+            dataset_cfg_local["dpath"],
+            dataset_cfg_local.get(train_file_key, dataset_cfg_local.get("train_valid_file", "train_valid_sequences.csv")),
+            diff_level=diff_level,
+            num_time_bins=num_time_bins,
+            folds=train_folds,
+        )
+        if not hqaf_feature_maps.get("has_usetimes", False):
+            print("Warning: HQAF source data has no 'usetimes' column; using default time bucket 0.")
+        if not hqaf_feature_maps.get("has_type", False):
+            print("Warning: HQAF source data has no 'type' column; using default question type 0.")
+        dimkt_difficulty_maps = {
+            "skills": hqaf_feature_maps.get("skills", {}),
+            "questions": hqaf_feature_maps.get("questions", {}),
+        }
+
     # Filter out learning_rate and other_config parameters for model
     other_config_keys = {"loss_c_all_lambda", "loss_q_all_lambda", "loss_c_next_lambda", "loss_q_next_lambda",
-                         "output_mode", "output_c_all_lambda", "output_c_next_lambda", "output_q_all_lambda",
-                         "output_q_next_lambda", "emb_type", "learning_rate", "use_timestamps", "dpath",
-                         "num_at", "num_it", "booster_strategy", "require_fold_embedding"}
+                          "output_mode", "output_c_all_lambda", "output_c_next_lambda", "output_q_all_lambda",
+                          "output_q_next_lambda", "emb_type", "learning_rate", "use_timestamps", "dpath",
+                          "num_at", "num_it", "booster_strategy", "require_fold_embedding",
+                          "lambda_item_difficulty"}
     model_kwargs = {k: v for k, v in model_cfg_local.items() if k not in other_config_keys}
+    if model_name in {"simplekt", "ukt", "stablekt", "sparsekt", "robustkt", "dtransformer", "lefokt_akt", "hqaf"}:
+        model_kwargs.setdefault("num_pid", dataset_cfg_local.get("num_q", 0))
+    if model_name == "hqaf":
+        model_kwargs.setdefault("num_type", dataset_cfg_local.get("num_type", model_cfg_local.get("num_type", 16)))
+    if model_name == "gkt":
+        graph_type = model_cfg_local.get("graph_type", "dense")
+        graph_file = f"gkt_graph_{graph_type}.npz"
+        graph_path = os.path.join(dataset_cfg_local["dpath"], graph_file)
+        if os.path.exists(graph_path):
+            graph = np.load(graph_path, allow_pickle=True)["matrix"]
+        else:
+            graph = get_gkt_graph(
+                dataset_cfg_local["num_c"],
+                dataset_cfg_local["dpath"],
+                dataset_cfg_local.get("train_valid_original_file", dataset_cfg_local.get("train_valid_file")),
+                dataset_cfg_local.get("test_original_file", dataset_cfg_local.get("test_file")),
+                graph_type=graph_type,
+                tofile=graph_file,
+            )
+        model_kwargs["graph"] = graph.float() if torch.is_tensor(graph) else torch.tensor(graph).float()
 
     set_seed(seed)
 
@@ -115,11 +266,17 @@ def train_one_fold(
     model_use_timestamps = model_cfg_local.get("use_timestamps", False)
     use_timestamps = bool(train_cfg_local.get("use_timestamps", False) or model_use_timestamps)
     train_cfg_local["use_timestamps"] = use_timestamps
-
     print_run_overview(device, model, model_cfg_local, dataset_cfg_local, train_cfg_local)
 
     # Get dataset_mode from overrides (if specified)
     dataset_mode = train_cfg_local.get("dataset_mode")
+    dataset_feature_kwargs = {
+        "include_dkt_forget": model_name == "dkt_forget",
+        "difficulty_maps": dimkt_difficulty_maps,
+        "include_history": model_name == "atdkt" and "his" in resolved_emb_type,
+        "include_hqaf_attrs": model_name == "hqaf",
+        "hqaf_feature_maps": hqaf_feature_maps,
+    }
 
     train_loader, valid_loader = build_dataset(
         "kt_default",
@@ -130,6 +287,8 @@ def train_one_fold(
         model_name=model_name,
         dataset_mode=dataset_mode,
         use_timestamps=use_timestamps,
+        time_idx_maps=lpkt_time_idx_maps,
+        **dataset_feature_kwargs,
     )
 
     # Build test dataloader if data exists. Peiyou's official test file has
@@ -152,6 +311,8 @@ def train_one_fold(
                 model_name=model_name,
                 dataset_mode=dataset_mode,
                 use_timestamps=use_timestamps,
+                time_idx_maps=lpkt_time_idx_maps,
+                **dataset_feature_kwargs,
             )
             print(f"Test loader built from: {test_path}")
         except Exception as e:

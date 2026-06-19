@@ -79,18 +79,14 @@ class DeepIRTTrainer(BaseTrainer):
         if masks is not None:
             masks = masks.to(self.device)
 
-        data = {
-            "qseqs": qseqs,
-            "cseqs": cseqs,
-            "rseqs": rseqs,
-            "shft_qseqs": qshft,
-            "shft_cseqs": cshft,
-            "shft_rseqs": rshft,
-            "masks": masks if masks is not None else torch.zeros_like(sm),
-            "smasks": sm,
-        }
+        base = cseqs if cseqs is not None and cseqs.numel() > 0 else qseqs
+        base_shft = cshft if cshft is not None and cshft.numel() > 0 else qshft
+        if base is None or base_shft is None:
+            raise ValueError("DeepIRT requires concept or question sequences.")
 
-        pred = self.model(data, return_details=False)
+        full_q = torch.cat((base[:, 0:1], base_shft), dim=1).long()
+        full_r = torch.cat((rseqs[:, 0:1], rshft), dim=1).long()
+        pred = self.model(full_q, full_r)[:, 1:]
 
         target = rshft
 

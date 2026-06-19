@@ -1,4 +1,5 @@
 import datetime
+import json
 import os
 from pathlib import Path
 import sys
@@ -38,6 +39,65 @@ def _parse_folds_spec(spec: str):
             continue
         folds.append(int(part))
     return folds
+
+
+def _resolve_existing_cv_dir(cv_run_dir: str, save_dir: str):
+    raw = Path(cv_run_dir)
+    if raw.is_absolute():
+        candidates = [raw]
+    else:
+        save_root = Path(save_dir)
+        if not save_root.is_absolute():
+            save_root = ROOT / save_root
+        candidates = [ROOT / raw, save_root / raw]
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+
+    tried = ", ".join(str(candidate) for candidate in candidates)
+    raise typer.BadParameter(f"--cv-run-dir not found. Tried: {tried}")
+
+
+def _load_json(path: Path):
+    with path.open("r", encoding="utf-8", errors="replace") as f:
+        return json.load(f)
+
+
+def _find_best_model_path(run_dir: Path):
+    candidates = [p for p in run_dir.glob("*.pt") if p.name != "last_epoch_model.pt"]
+    if not candidates:
+        return None
+    return str(sorted(candidates)[0])
+
+
+def _load_completed_fold(cv_dir: Path, fold_id: int, dataset_name: str, model_name: str):
+    for run_config_path in sorted(cv_dir.glob("*/run_config.json")):
+        run_dir = run_config_path.parent
+        best_metrics_path = run_dir / "best_metrics.json"
+        if not best_metrics_path.exists():
+            continue
+        try:
+            run_config = _load_json(run_config_path)
+            best_metrics = _load_json(best_metrics_path)
+        except Exception:
+            continue
+        if int(run_config.get("fold", -999)) != int(fold_id):
+            continue
+        if run_config.get("dataset_name") != dataset_name:
+            continue
+        if run_config.get("model_name") != model_name:
+            continue
+        return {
+            "fold": fold_id,
+            "run_name": run_config.get("run_name", run_dir.name),
+            "ckpt_dir": str(run_dir),
+            "emb_type": run_config.get("emb_type"),
+            "best_metrics": best_metrics,
+            "best_path": _find_best_model_path(run_dir),
+            "skipped": True,
+        }
+    return None
 
 
 def launch_train(
@@ -195,6 +255,11 @@ def main(
         "--dropout",
         help="Dropout rate for training"
         ),
+    patience: Optional[int] = typer.Option(
+        None,
+        "--patience",
+        help="Early stopping patience. Use -1 to disable early stopping.",
+        ),
 
     # Experiment options
     fold: int = typer.Option(
@@ -211,6 +276,16 @@ def main(
         "0-4",
         "--folds",
         help="Folds to run when --cv=1. Examples: 0-4 or 0,1,3",
+    ),
+    cv_run_dir: Optional[str] = typer.Option(
+        None,
+        "--cv-run-dir",
+        help="Existing CV directory to continue, e.g. saved_model/cv-assist2012-iekt-20260511-120000.",
+    ),
+    skip_completed: int = typer.Option(
+        0,
+        "--skip-completed",
+        help="When --cv=1, skip folds that already have best_metrics.json in --cv-run-dir.",
     ),
     seed: int = typer.Option(
         3407,
@@ -273,6 +348,7 @@ def main(
             "learning_rate": learning_rate,
             "emb_size": emb_size,
             "dropout": dropout,
+            "patience": patience,
         }
         return train_one_fold(
             dataset_name=dataset_name,
@@ -297,14 +373,27 @@ def main(
     if cv == 1:
         fold_ids = _parse_folds_spec(folds)
         ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        cv_run_name = f"cv-{dataset_name}-{model_name}-{ts}"
-        if add_uuid == 1:
-            cv_run_name = f"{cv_run_name}-{uuid.uuid4()}"
-        cv_dir = os.path.join(save_dir, cv_run_name)
-        os.makedirs(cv_dir, exist_ok=True)
+        if cv_run_dir:
+            cv_dir_path = _resolve_existing_cv_dir(cv_run_dir, save_dir)
+            cv_run_name = cv_dir_path.name
+            cv_dir = str(cv_dir_path)
+            print(f"[bold]Continuing CV run directory:[/bold] {cv_dir}")
+        else:
+            cv_run_name = f"cv-{dataset_name}-{model_name}-{ts}"
+            if add_uuid == 1:
+                cv_run_name = f"{cv_run_name}-{uuid.uuid4()}"
+            cv_dir = os.path.join(save_dir, cv_run_name)
+            cv_dir_path = Path(cv_dir)
+            os.makedirs(cv_dir, exist_ok=True)
 
         fold_results = []
         for fid in fold_ids:
+            if skip_completed == 1:
+                completed = _load_completed_fold(cv_dir_path, fid, dataset_name, model_name)
+                if completed is not None:
+                    print(f"\n[yellow]===== CV Fold {fid} skipped: completed run found =====[/yellow]\n")
+                    fold_results.append(completed)
+                    continue
             print(f"\n[bold]===== CV Fold {fid} / {fold_ids} =====[/bold]\n")
             fold_results.append(_train_one_fold(fid, save_root=cv_dir, cv_run_name=cv_run_name))
 

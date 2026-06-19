@@ -82,6 +82,11 @@ class JobStore:
             row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
         return self._decode(row)
 
+    def delete_job(self, job_id):
+        with self._lock, self._connect() as conn:
+            cur = conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+            return cur.rowcount > 0
+
     def list_jobs(self, limit=100):
         with self._connect() as conn:
             rows = conn.execute(
@@ -89,4 +94,3 @@ class JobStore:
                 (int(limit),),
             ).fetchall()
         return [self._decode(row) for row in rows]
-

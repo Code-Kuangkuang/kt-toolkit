@@ -106,9 +106,9 @@ class UKT(nn.Module):
         self,
         num_c,
         num_q,
-        num_pid,
-        emb_size=256,
-        num_blocks=2,
+        num_pid=None,
+        emb_size=None,
+        num_blocks=None,
         dropout=0.1,
         d_ff=256,
         num_layers=2,
@@ -127,10 +127,20 @@ class UKT(nn.Module):
         **kwargs
     ):
         super().__init__()
+        if emb_size is None:
+            emb_size = kwargs.pop("d_model", 256)
+        if num_blocks is None:
+            num_blocks = kwargs.pop("n_blocks", 2)
+        if num_pid is None:
+            num_pid = num_q
+
         self.model_name = "ukt"
         self.num_c = num_c
         self.num_q = num_q
         self.num_pid = num_pid
+        self.n_question = num_c
+        self.n_pid = num_pid
+        self.model_type = self.model_name
         self.emb_size = emb_size
         self.dropout = dropout
         self.kq_same = kq_same
@@ -139,12 +149,12 @@ class UKT(nn.Module):
         self.use_CL = use_CL
         self.use_uncertainty_aug = use_uncertainty_aug
         self.atten_type = atten_type
+        self.cl_weight = cl_weight
 
         embed_l = emb_size
 
         if use_CL:
             self.wloss = WassersteinNCELoss(1)
-            self.cl_weight = cl_weight
 
         self.embed_l = emb_size
 
@@ -172,7 +182,7 @@ class UKT(nn.Module):
         self.model = UKTArchitecture(
             num_c=num_c,
             num_blocks=num_blocks,
-            num_heads=num_attn_heads,
+            n_heads=num_attn_heads,
             dropout=dropout,
             d_model=emb_size,
             d_feature=emb_size // num_attn_heads,
@@ -220,24 +230,26 @@ class UKT(nn.Module):
         cshft,
         rshft,
         pidseqs=None,
+        pidshft=None,
         masks=None,
         train=False,
         shft_r_aug=None,
         r_aug=None,
+        qtest=False,
         **kwargs
     ):
-        q = qseqs.long()
-        c = cseqs.long() if cseqs is not None else qseqs.long()
+        q = qseqs.long() if qseqs is not None else None
+        c = cseqs.long() if cseqs is not None else q
+        if c is None:
+            raise ValueError("UKT requires concept sequences or question sequences.")
         r = rseqs.long()
-        qshft = qshft.long()
-        cshft = cshft.long() if cshft is not None else qshft.long()
+        qshft = qshft.long() if qshft is not None else None
+        cshft = cshft.long() if cshft is not None else qshft
+        if cshft is None:
+            raise ValueError("UKT requires shifted concept or question sequences.")
         rshft = rshft.long()
 
-        if pidseqs is not None and self.num_pid > 0:
-            pid_data = torch.cat((pidseqs[:, 0:1], qshft), dim=1)
-        else:
-            pid_data = torch.cat((q[:, 0:1], qshft), dim=1)
-
+        # Match pykt: concepts drive base embeddings, questions drive problem difficulty.
         q_data = torch.cat((c[:, 0:1], cshft), dim=1)
         target = torch.cat((r[:, 0:1], rshft), dim=1)
 
@@ -266,6 +278,18 @@ class UKT(nn.Module):
 
         # Add problem difficulty
         if self.num_pid > 0 and emb_type.find("norasch") == -1:
+            if pidseqs is not None:
+                pid = pidseqs.long()
+                next_pid = pidshft.long() if pidshft is not None else qshft
+            else:
+                pid = q
+                next_pid = qshft
+            if pid is None or next_pid is None:
+                raise ValueError(
+                    "UKT Rasch difficulty requires qseqs/shft_qseqs "
+                    "or pidseqs/shft_pidseqs. Set num_pid=0 for concept-only data."
+                )
+            pid_data = torch.cat((pid[:, 0:1], next_pid), dim=1)
             if emb_type.find("aktrasch") == -1:
                 q_embed_diff_data = self.q_embed_diff(q_data)
                 pid_embed_data = self.difficult_param(pid_data)
@@ -287,6 +311,16 @@ class UKT(nn.Module):
                 qa_cov_embed_data = qa_cov_embed_data + pid_embed_data * (
                     qa_embed_diff_data + q_embed_diff_data
                 )
+                if train and self.use_CL:
+                    qa_aug_embed_diff_data = self.qa_embed_diff(target_aug)
+                    mean_q_aug_embed_data = mean_q_aug_embed_data + pid_embed_data * q_embed_diff_data
+                    cov_q_aug_embed_data = cov_q_aug_embed_data + pid_embed_data * q_embed_diff_data
+                    mean_qa_aug_embed_data = mean_qa_aug_embed_data + pid_embed_data * (
+                        qa_aug_embed_diff_data + q_embed_diff_data
+                    )
+                    cov_qa_aug_embed_data = cov_qa_aug_embed_data + pid_embed_data * (
+                        qa_aug_embed_diff_data + q_embed_diff_data
+                    )
 
         # Pass through transformer
         mean_d_output, cov_d_output = self.model(
@@ -349,6 +383,8 @@ class UKT(nn.Module):
             else:
                 return preds
         else:
+            if qtest:
+                return preds, concat_q
             return preds
 
 
@@ -452,7 +488,7 @@ class UKTTransformerLayer(nn.Module):
         seqlen = query_mean.size(1)
 
         nopeek_mask = np.triu(np.ones((1, 1, seqlen, seqlen)), k=mask).astype("uint8")
-        src_mask = torch.from_numpy(nopeek_mask) == 0
+        src_mask = (torch.from_numpy(nopeek_mask) == 0).to(query_mean.device)
 
         if mask == 0:
             query2_mean, query2_cov = self.masked_attn_head(

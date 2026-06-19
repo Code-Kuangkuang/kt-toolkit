@@ -18,9 +18,9 @@ class SimpleKT(nn.Module):
         self,
         num_c,
         num_q,
-        num_pid,
-        emb_size=128,
-        num_blocks=2,
+        num_pid=None,
+        emb_size=None,
+        num_blocks=None,
         dropout=0.2,
         d_ff=256,
         num_layers=2,
@@ -34,6 +34,13 @@ class SimpleKT(nn.Module):
         **kwargs
     ):
         super().__init__()
+        if emb_size is None:
+            emb_size = kwargs.pop("d_model", 128)
+        if num_blocks is None:
+            num_blocks = kwargs.pop("n_blocks", 2)
+        if num_pid is None:
+            num_pid = num_q
+
         self.model_name = "simplekt"
         self.num_c = num_c
         self.num_q = num_q
@@ -67,7 +74,7 @@ class SimpleKT(nn.Module):
         self.model = SimpleKTArchitecture(
             num_c=num_c,
             num_blocks=num_blocks,
-            num_heads=num_attn_heads,
+            n_heads=num_attn_heads,
             dropout=dropout,
             d_model=emb_size,
             d_feature=emb_size // num_attn_heads,
@@ -102,22 +109,32 @@ class SimpleKT(nn.Module):
             qa_embed_data = self.qa_embed(target) + q_embed_data
         return q_embed_data, qa_embed_data
 
-    def forward(self, qseqs, rseqs, cseqs, qshft, cshft, rshft, pidseqs=None, **kwargs):
-        q = qseqs.long()
-        c = cseqs.long() if cseqs is not None else qseqs.long()
+    def forward(
+        self,
+        qseqs,
+        rseqs,
+        cseqs,
+        qshft,
+        cshft,
+        rshft,
+        pidseqs=None,
+        pidshft=None,
+        **kwargs,
+    ):
+        q = qseqs.long() if qseqs is not None else None
+        c = cseqs.long() if cseqs is not None else q
+        if c is None:
+            raise ValueError("SimpleKT requires concept sequences or question sequences.")
         r = rseqs.long()
-        qshft = qshft.long()
-        cshft = cshft.long() if cshft is not None else qshft.long()
+        qshft = qshft.long() if qshft is not None else None
+        cshft = cshft.long() if cshft is not None else qshft
+        if cshft is None:
+            raise ValueError("SimpleKT requires shifted concept or question sequences.")
         rshft = rshft.long()
 
-        # Use concepts as base if available
+        # Match pykt: concepts drive base embeddings, questions drive problem difficulty.
         q_data = torch.cat((c[:, 0:1], cshft), dim=1)
         target = torch.cat((r[:, 0:1], rshft), dim=1)
-
-        if pidseqs is not None and self.num_pid > 0:
-            pid_data = torch.cat((pidseqs[:, 0:1], qshft), dim=1)
-        else:
-            pid_data = q_data
 
         # Base embeddings
         if self.emb_type.startswith("qid"):
@@ -125,6 +142,18 @@ class SimpleKT(nn.Module):
 
         # Add problem difficulty
         if self.num_pid > 0 and self.emb_type.find("norasch") == -1:
+            if pidseqs is not None:
+                pid = pidseqs.long()
+                next_pid = pidshft.long() if pidshft is not None else qshft
+            else:
+                pid = q
+                next_pid = qshft
+            if pid is None or next_pid is None:
+                raise ValueError(
+                    "SimpleKT Rasch difficulty requires qseqs/shft_qseqs "
+                    "or pidseqs/shft_pidseqs. Set num_pid=0 for concept-only data."
+                )
+            pid_data = torch.cat((pid[:, 0:1], next_pid), dim=1)
             if self.emb_type.find("aktrasch") == -1:
                 q_embed_diff_data = self.q_embed_diff(q_data)
                 pid_embed_data = self.difficult_param(pid_data)
@@ -222,7 +251,7 @@ class TransformerLayer(nn.Module):
     def forward(self, mask, query, key, values, apply_pos=True):
         seqlen = query.size(1)
         nopeek_mask = np.triu(np.ones((1, 1, seqlen, seqlen)), k=mask).astype("uint8")
-        src_mask = torch.from_numpy(nopeek_mask) == 0
+        src_mask = (torch.from_numpy(nopeek_mask) == 0).to(query.device)
         if mask == 0:
             query2 = self.masked_attn_head(query, key, values, mask=src_mask, zero_pad=True)
         else:

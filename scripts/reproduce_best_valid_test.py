@@ -17,6 +17,7 @@ import models  # noqa: F401
 import core.trainers  # noqa: F401
 from core.factory import build_dataset, build_model, build_trainer
 from core.train_runner import build_optimizer, set_seed
+from datasets.lpkt_utils import generate_time2idx
 
 
 MODEL_CONFIG_EXCLUDE = {
@@ -37,6 +38,7 @@ MODEL_CONFIG_EXCLUDE = {
     "num_it",
     "booster_strategy",
     "require_fold_embedding",
+    "lambda_item_difficulty",
 }
 
 
@@ -77,6 +79,13 @@ def reproduce_run(run_dir, device_arg):
             dataset_cfg["dpath"] = str(local_dpath)
     data_config = {dataset_name: dataset_cfg}
 
+    lpkt_time_idx_maps = None
+    if model_name == "lpkt":
+        at2idx, it2idx = generate_time2idx(dataset_cfg)
+        lpkt_time_idx_maps = {"at2idx": at2idx, "it2idx": it2idx}
+        model_cfg["num_at"] = len(at2idx) + 1
+        model_cfg["num_it"] = len(it2idx) + 1
+
     set_seed(seed)
     if device_arg == "auto":
         device = "cuda:0" if torch.cuda.is_available() else "cpu"
@@ -110,6 +119,7 @@ def reproduce_run(run_dir, device_arg):
         model_name=model_name,
         dataset_mode=dataset_mode,
         use_timestamps=use_timestamps,
+        time_idx_maps=lpkt_time_idx_maps,
     )
     test_loader = build_dataset(
         "kt_test",
@@ -119,6 +129,7 @@ def reproduce_run(run_dir, device_arg):
         model_name=model_name,
         dataset_mode=dataset_mode,
         use_timestamps=use_timestamps,
+        time_idx_maps=lpkt_time_idx_maps,
     )
 
     optimizer = build_optimizer(train_cfg, model_cfg, model)

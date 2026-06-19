@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -143,6 +144,10 @@ class JobRunner:
         ]
         if request.get("cv"):
             command.extend(["--cv", "1", "--folds", str(request.get("folds") or "0-4")])
+            if request.get("cv_run_dir"):
+                command.extend(["--cv-run-dir", str(request["cv_run_dir"])])
+            if request.get("skip_completed"):
+                command.extend(["--skip-completed", "1"])
         return command
 
     def _run_job(self, job_id):
@@ -222,6 +227,39 @@ class JobRunner:
             error_message="Stopped by user",
         )
 
+    def delete_job(self, job_id):
+        job = self.store.get_job(job_id)
+        if job is None:
+            return None
+        if job["status"] in {"queued", "running"}:
+            job = self.stop_job(job_id) or job
+
+        artifact_deleted = self._delete_job_artifacts(job)
+        self.store.delete_job(job_id)
+        job["deleted"] = True
+        job["artifact_deleted"] = artifact_deleted
+        return job
+
+    def _delete_job_artifacts(self, job):
+        path = self._job_artifact_root(job)
+        if not path.exists():
+            return False
+
+        root = self.root.resolve()
+        target = path.resolve()
+        try:
+            target.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"Refusing to delete outside project root: {target}") from exc
+
+        if target == root or not (target.name == job["id"] or target.name.startswith("cv-")):
+            raise ValueError(f"Refusing to delete non-job directory: {target}")
+        if not target.is_dir():
+            raise ValueError(f"Refusing to delete non-directory artifact path: {target}")
+
+        shutil.rmtree(target)
+        return True
+
     @staticmethod
     def _terminate_pid(pid):
         try:
@@ -242,6 +280,16 @@ class JobRunner:
 
     def get_job(self, job_id):
         return self.store.get_job(job_id)
+
+    def _job_artifact_root(self, job):
+        request = job.get("request") or {}
+        cv_run_dir = request.get("cv_run_dir")
+        if cv_run_dir:
+            path = Path(cv_run_dir)
+            if not path.is_absolute():
+                path = self.root / path
+            return path
+        return Path(job["save_dir"])
 
     def tail_log(self, job_id, lines=300):
         job = self.store.get_job(job_id)
@@ -276,7 +324,7 @@ class JobRunner:
         job = self.store.get_job(job_id)
         if job is None:
             return None
-        save_dir = Path(job["save_dir"])
+        save_dir = self._job_artifact_root(job)
         runs = []
         for metrics_path in sorted(save_dir.rglob("metrics.jsonl")):
             metrics = []
