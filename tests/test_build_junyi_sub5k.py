@@ -3,8 +3,13 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+import scripts.build_junyi_sub5k as builder
 from scripts.build_junyi_sub5k import build_subset
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 RAW_SCHEMAS = {
@@ -198,6 +203,55 @@ def _read_rows(path):
 
 
 class JunyiSubsetBuilderTest(unittest.TestCase):
+    def test_publish_retries_transient_windows_permission_error(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            staging = root / "staging"
+            target = root / "target"
+            staging.mkdir()
+            (staging / "ready.txt").write_text("ready", encoding="utf-8")
+            real_replace = builder.os.replace
+            calls = 0
+
+            def flaky_replace(source, destination):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise PermissionError(5, "transient directory handle")
+                real_replace(source, destination)
+
+            with mock.patch.object(
+                builder.os, "replace", side_effect=flaky_replace
+            ), mock.patch("time.sleep") as sleep:
+                builder._publish_directory(
+                    staging, target, attempts=3, delay_seconds=0.1
+                )
+
+            self.assertEqual(calls, 2)
+            sleep.assert_called_once_with(0.1)
+            self.assertFalse(staging.exists())
+            self.assertEqual(
+                (target / "ready.txt").read_text(encoding="utf-8"), "ready"
+            )
+
+    def test_repository_config_registers_both_dataset_views(self):
+        config = json.loads(
+            (ROOT / "configs" / "data_config.json").read_text(encoding="utf-8")
+        )["junyi_sub5k"]
+        expected = {
+            "dpath": "data/junyi_sub5k",
+            "num_q": 721,
+            "num_c": 39,
+            "max_concepts": 1,
+            "train_valid_file": "train_valid_sequences.csv",
+            "test_file": "test_sequences.csv",
+            "train_valid_file_quelevel": "train_valid_sequences_quelevel.csv",
+            "test_file_quelevel": "test_sequences_quelevel.csv",
+        }
+        for key, value in expected.items():
+            self.assertEqual(config[key], value)
+        self.assertEqual(config["folds"], list(range(5)))
+
     def test_builds_deterministic_leakage_free_multi_view_subset(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -279,6 +333,8 @@ class JunyiSubsetBuilderTest(unittest.TestCase):
             )
             self.assertEqual(manifest_a["selection"]["seed"], 3407)
             self.assertEqual(manifest_a["selection"]["algorithm_version"], 1)
+            self.assertEqual(manifest_a["selection"]["strata_count"], 5)
+            self.assertEqual(len(manifest_a["selection"]["strata"]), 5)
 
 
 if __name__ == "__main__":
