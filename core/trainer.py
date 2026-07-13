@@ -25,7 +25,7 @@ class BaseTrainer:
             self.hooks.epoch_end(self, metrics_dict)
 
             # Evaluate on test set every 10 epochs only when a labeled test
-            # loader is available. Some datasets, such as Peiyou, provide a
+            # loader is available. Some datasets, such as AAAI2023, provide a
             # prediction-only test file with hidden labels.
             if self.test_loader is not None and epoch % 10 == 0:
                 test_metrics = self.evaluate_test()

@@ -1,4 +1,4 @@
-dataset_name: peiyou
+dataset_name: aaai2023
 raw_path: ""
 dpath: data/aaai2023
 configf: configs/data_config.json

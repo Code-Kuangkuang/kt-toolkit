@@ -17,6 +17,7 @@ import core.trainers  # register trainers
 import datasets.init_dataset  # register dataset builders
 import models  # register models
 from core.config import load_cfg
+from core.dataset_names import normalize_dataset_name
 from core.train_runner import aggregate_fold_metrics, print_cv_summary, save_cv_summary, train_one_fold
 
 app = typer.Typer(add_completion=False)
@@ -138,6 +139,7 @@ def launch_train(
         dict: Training results containing best_metrics, run_name, ckpt_dir
     """
     ROOT = Path(__file__).resolve().parents[1]
+    dataset_name = normalize_dataset_name(dataset_name)
 
     kt_config_path = "configs/kt_config.json"
     data_config_path = "configs/data_config.json"
@@ -334,6 +336,7 @@ def main(
         help="Path to the wandb.json file"
         ),
 ):
+    dataset_name = normalize_dataset_name(dataset_name)
     kt_cfg_raw = load_cfg(kt_config)
     data_config_raw = load_cfg(data_config_path)
 

@@ -8,6 +8,7 @@ import torch
 from rich import print
 
 from core.factory import build_dataset, build_model, build_trainer
+from core.dataset_names import is_hidden_label_dataset, normalize_dataset_name
 from core.run_support import (
     aggregate_fold_metrics,
     apply_overrides,
@@ -89,6 +90,7 @@ def train_one_fold(
     overrides,
     gpu_id=0,
 ):
+    dataset_name = normalize_dataset_name(dataset_name)
     model_name = MODEL_NAME_ALIASES.get(model_name.lower(), model_name.lower())
     kt_cfg = copy.deepcopy(kt_cfg_raw)
     train_cfg_local = kt_cfg["train_config"]
@@ -291,15 +293,15 @@ def train_one_fold(
         **dataset_feature_kwargs,
     )
 
-    # Build test dataloader if data exists. Peiyou's official test file has
+    # Build test dataloader if data exists. AAAI2023's official test file has
     # hidden targets marked as -1, so it is for prediction/submission only.
     test_loader = None
-    is_peiyou = dataset_name.lower() == "peiyou"
+    has_hidden_test_labels = is_hidden_label_dataset(dataset_name)
     test_path = os.path.join(dataset_cfg_local["dpath"], dataset_cfg_local.get("test_file_quelevel", dataset_cfg_local.get("test_file", "")))
-    if is_peiyou:
+    if has_hidden_test_labels:
         print(
-            "Peiyou test evaluation disabled: pykt_test.csv contains hidden "
-            "targets marked as -1. Use scripts/predict_peiyou.py to generate prediction.csv."
+            "AAAI2023 test evaluation disabled: pykt_test.csv contains hidden "
+            "targets marked as -1. Use scripts/predict_aaai2023.py to generate prediction.csv."
         )
     elif os.path.exists(dataset_cfg_local["dpath"]) and dataset_cfg_local.get("test_file"):
         try:
