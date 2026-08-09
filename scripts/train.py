@@ -109,9 +109,6 @@ def launch_train(
     use_wandb: int,
     save_dir: str,
     seed: int,
-    C1: float = None,
-    C2: float = None,
-    C4: float = None,
     epsilon: float = None,
     add_uuid: int = 0,
     emb_type: Optional[str] = None,
@@ -130,7 +127,7 @@ def launch_train(
         use_wandb: Whether to use Weights and Biases
         save_dir: Directory to save results
         seed: Random seed
-        C1, C2, C4, epsilon: Hyperparameters (optional, passed to model config as overrides)
+        epsilon: Hyperparameter override used by models such as ATKT
         add_uuid: Whether to add UUID to run name
         emb_type: Embedding type
         **kwargs: Additional arguments (ignored)
@@ -158,7 +155,7 @@ def launch_train(
     }
 
     # Add hyperparameters to overrides if provided
-    hp_mapping = {"C1": "C1", "C2": "C2", "C4": "C4", "epsilon": "epsilon"}
+    hp_mapping = {"epsilon": "epsilon"}
     for param_name, config_key in hp_mapping.items():
         param_value = locals().get(param_name)
         if param_value is not None:

@@ -22,24 +22,39 @@ from core.run_support import (
 )
 from datasets.lpkt_utils import generate_time2idx
 from datasets.feature_utils import (
+    compute_question_frequency_counts,
     compute_dkt_forget_stats,
     compute_dimkt_difficulty_maps,
     compute_hqaf_feature_maps,
 )
 from models.gkt_utils import get_gkt_graph
+from models.dgekt_utils import build_dgekt_graphs
 from strategies import apply_dkt_pebg_strategy
 
 
 MODEL_NAME_ALIASES = {
     "dkt-forget": "dkt_forget",
-    "gbkt-final": "gbkt_final",
-    "gbkt-coverage": "cgbkt",
-    "gbktv5": "cgbkt",
+
+    "gbkt_tc": "removed_model",
+    "gbkt-tc": "removed_model",
+    "gbkt-theory": "removed_model",
+    "gbkt_tc_no_coverage": "removed_model_no_coverage",
+    "gbkt-tc-no-coverage": "removed_model_no_coverage",
+    "gbkt_tc_no_dir": "removed_model_no_dir",
+    "gbkt-tc-no-dir": "removed_model_no_dir",
+    "gbkt_tc_no_q_radius": "removed_model_no_q_radius",
+    "gbkt-tc-no-q-radius": "removed_model_no_q_radius",
+    "gbkt_tc_center_only": "removed_model_center_only",
+    "gbkt-tc-center-only": "removed_model_center_only",
+    "gbkt_tc_no_ball": "removed_model_no_ball",
+    "gbkt-tc-no-ball": "removed_model_no_ball",
+    "gbkt_tc_margin_only": "removed_model_margin_only",
+    "gbkt-tc-margin-only": "removed_model_margin_only",
     "lefokt": "lefokt_akt",
     "hqaf-kt": "hqaf",
     "hqaf_kt": "hqaf",
 }
-QUESTION_REQUIRED_MODELS = {"atdkt", "dimkt", "stablekt", "sparsekt", "robustkt", "dtransformer", "rekt", "lefokt_akt", "hqaf"}
+QUESTION_REQUIRED_MODELS = {"atdkt", "dimkt", "stablekt", "sparsekt", "robustkt", "dtransformer", "rekt", "lefokt_akt", "hqaf", "keenkt", "dgekt", "removed_model", "removed_model", "removed_model", "removed_model", "removed_model_no_coverage", "removed_model_no_dir", "removed_model_no_q_radius", "removed_model_center_only", "removed_model_no_ball", "removed_model_margin_only"}
 ALL_IN_ONE_MODELS = {
     "lpkt",
     "atdkt",
@@ -53,7 +68,18 @@ ALL_IN_ONE_MODELS = {
     "rekt",
     "lefokt_akt",
     "hqaf",
-    "cgbkt",
+    "keenkt",
+    "removed_model",
+    "removed_model",
+    "removed_model",
+    "removed_model",
+    "dgekt",
+    "removed_model_no_coverage",
+    "removed_model_no_dir",
+    "removed_model_no_q_radius",
+    "removed_model_center_only",
+    "removed_model_no_ball",
+    "removed_model_margin_only",
 }
 ONE_BY_ONE_MODELS = {"hawkes"}
 
@@ -68,6 +94,49 @@ def _resolve_existing_sequence_filename(dataset_cfg, primary_key, fallback_key):
         if os.path.exists(os.path.join(dataset_cfg["dpath"], filename)):
             return filename
     return primary_name or fallback_name
+
+
+def _build_removed_model_question_frequency(
+    model_name,
+    dataset_cfg,
+    dataset_mode,
+    fold_id,
+):
+    if model_name not in {"removed_model", "removed_model", "removed_model"}:
+        return None, None
+
+    train_file_key = (
+        "train_valid_file_quelevel"
+        if dataset_mode == "all_in_one"
+        else "train_valid_file"
+    )
+    train_file = _resolve_existing_sequence_filename(
+        dataset_cfg,
+        train_file_key,
+        "train_valid_file",
+    )
+    train_folds = sorted(set(dataset_cfg.get("folds", [])) - {int(fold_id)})
+    return compute_question_frequency_counts(
+        dataset_cfg["dpath"],
+        train_file,
+        folds=train_folds,
+        num_q=dataset_cfg["num_q"],
+    )
+
+
+def _build_removed_model_question_frequency(
+    model_name,
+    dataset_cfg,
+    dataset_mode,
+    fold_id,
+):
+    """Backward-compatible wrapper used by existing removed_model research tests."""
+    return _build_removed_model_question_frequency(
+        model_name=model_name,
+        dataset_cfg=dataset_cfg,
+        dataset_mode=dataset_mode,
+        fold_id=fold_id,
+    )
 
 
 def train_one_fold(
@@ -174,6 +243,7 @@ def train_one_fold(
         model_cfg_local["difficult_levels"] = difficult_levels
         model_cfg_local["batch_size"] = train_cfg_local["batch_size"]
         model_cfg_local["num_steps"] = train_cfg_local.get("seq_len", 200)
+        train_folds = sorted(set(dataset_cfg_local.get("folds", [])) - {fold_id})
         difficulty_file_key = "train_valid_file_quelevel" if train_cfg_local.get("dataset_mode") == "all_in_one" else "train_valid_file"
         difficulty_file = _resolve_existing_sequence_filename(
             dataset_cfg_local,
@@ -184,6 +254,7 @@ def train_one_fold(
             dataset_cfg_local["dpath"],
             difficulty_file,
             difficult_levels,
+            folds=train_folds,
         )
     elif model_name == "hqaf":
         diff_level = int(model_cfg_local.get("diff_level", model_cfg_local.get("difficult_levels", 50)))
@@ -193,9 +264,14 @@ def train_one_fold(
         model_cfg_local["num_type"] = int(dataset_cfg_local.get("num_type", model_cfg_local.get("num_type", 16)))
         train_file_key = "train_valid_file_quelevel" if train_cfg_local.get("dataset_mode") == "all_in_one" else "train_valid_file"
         train_folds = sorted(set(dataset_cfg_local.get("folds", [])) - {fold_id})
+        train_file = _resolve_existing_sequence_filename(
+            dataset_cfg_local,
+            train_file_key,
+            "train_valid_file",
+        )
         hqaf_feature_maps = compute_hqaf_feature_maps(
             dataset_cfg_local["dpath"],
-            dataset_cfg_local.get(train_file_key, dataset_cfg_local.get("train_valid_file", "train_valid_sequences.csv")),
+            train_file,
             diff_level=diff_level,
             num_time_bins=num_time_bins,
             folds=train_folds,
@@ -209,13 +285,29 @@ def train_one_fold(
             "questions": hqaf_feature_maps.get("questions", {}),
         }
 
+    removed_model_question_counts, removed_model_frequency_info = (
+        _build_removed_model_question_frequency(
+            model_name=model_name,
+            dataset_cfg=dataset_cfg_local,
+            dataset_mode=train_cfg_local.get("dataset_mode"),
+            fold_id=fold_id,
+        )
+    )
+
+    dgekt_graph_info = None
+
     # Filter out learning_rate and other_config parameters for model
     other_config_keys = {"loss_c_all_lambda", "loss_q_all_lambda", "loss_c_next_lambda", "loss_q_next_lambda",
                           "output_mode", "output_c_all_lambda", "output_c_next_lambda", "output_q_all_lambda",
                           "output_q_next_lambda", "emb_type", "learning_rate", "use_timestamps", "dpath",
-                          "num_at", "num_it", "booster_strategy", "require_fold_embedding",
-                          "lambda_item_difficulty"}
+                           "num_at", "num_it", "booster_strategy", "require_fold_embedding",
+                          "lambda_item_difficulty", "lambda_rel", "lambda_kl",
+                          "lambda_prior", "kl_warmup_epochs", "clean_prior",
+                          "lambda_move", "lambda_item", "lambda_coverage_gate",
+                          "lambda_response_gate"}
     model_kwargs = {k: v for k, v in model_cfg_local.items() if k not in other_config_keys}
+    if removed_model_question_counts is not None:
+        model_kwargs["question_counts"] = removed_model_question_counts
     if model_name in {"simplekt", "ukt", "stablekt", "sparsekt", "robustkt", "dtransformer", "lefokt_akt", "hqaf"}:
         model_kwargs.setdefault("num_pid", dataset_cfg_local.get("num_q", 0))
     if model_name == "hqaf":
@@ -236,6 +328,49 @@ def train_one_fold(
                 tofile=graph_file,
             )
         model_kwargs["graph"] = graph.float() if torch.is_tensor(graph) else torch.tensor(graph).float()
+    elif model_name == "dgekt":
+        if "concepts" not in dataset_cfg_local.get("input_type", []):
+            raise ValueError(
+                f"DGEKT requires question-concept associations, but dataset {dataset_name} "
+                f"has input_type={dataset_cfg_local.get('input_type')}."
+            )
+        graph_file_key = (
+            "train_valid_file_quelevel"
+            if train_cfg_local.get("dataset_mode") == "all_in_one"
+            else "train_valid_file"
+        )
+        graph_file = _resolve_existing_sequence_filename(
+            dataset_cfg_local, graph_file_key, "train_valid_file"
+        )
+        test_graph_file_key = (
+            "test_file_quelevel"
+            if train_cfg_local.get("dataset_mode") == "all_in_one"
+            else "test_file"
+        )
+        test_graph_file = _resolve_existing_sequence_filename(
+            dataset_cfg_local, test_graph_file_key, "test_file"
+        )
+        association_files = []
+        if model_cfg_local.get("include_test_question_metadata", True) and test_graph_file and os.path.exists(
+            os.path.join(dataset_cfg_local["dpath"], test_graph_file)
+        ):
+            association_files.append(test_graph_file)
+        train_folds = sorted(set(dataset_cfg_local.get("folds", [])) - {int(fold_id)})
+        hypergraph, transition_out, transition_in, dgekt_graph_info = build_dgekt_graphs(
+            dataset_cfg_local["dpath"],
+            graph_file,
+            num_q=dataset_cfg_local["num_q"],
+            num_c=dataset_cfg_local["num_c"],
+            train_folds=train_folds,
+            association_files=association_files,
+        )
+        model_kwargs.update(
+            {
+                "hypergraph": hypergraph,
+                "transition_out": transition_out,
+                "transition_in": transition_in,
+            }
+        )
 
     set_seed(seed)
 
@@ -354,6 +489,16 @@ def train_one_fold(
         "train_config": train_cfg_local,
         "model_config": model_cfg_local,
         "dataset_config": dataset_cfg_local,
+        "removed_model_question_frequency": (
+            removed_model_frequency_info if model_name == "removed_model" else None
+        ),
+        "removed_model_question_frequency": (
+            removed_model_frequency_info if model_name == "removed_model" else None
+        ),
+        "removed_model_question_frequency": (
+            removed_model_frequency_info if model_name == "removed_model" else None
+        ),
+        "dgekt_graph": dgekt_graph_info,
         "booster_info": booster_info,
         "wandb": {
             "enabled": bool(wandb_cfg),

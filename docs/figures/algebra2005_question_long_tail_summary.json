@@ -1,0 +1,42 @@
+{
+  "dataset": "Algebra2005",
+  "input_files": [
+    "data/algebra2005/train_valid_quelevel.csv",
+    "data/algebra2005/test_quelevel.csv"
+  ],
+  "definition": {
+    "head": ">=20 interactions",
+    "mid": "5-19 interactions",
+    "tail": "1-4 interactions"
+  },
+  "total_questions": 173113,
+  "total_interactions": 607025,
+  "maximum_interactions_per_question": 866,
+  "median_interactions_per_question": 1.0,
+  "groups": {
+    "head": {
+      "questions": 5672,
+      "question_share": 0.032764725930461605,
+      "interactions": 372863,
+      "interaction_share": 0.6142465302088053,
+      "rank_start": 1,
+      "rank_end": 5672
+    },
+    "mid": {
+      "questions": 5158,
+      "question_share": 0.0297955670573556,
+      "interactions": 54387,
+      "interaction_share": 0.08959598039619456,
+      "rank_start": 5673,
+      "rank_end": 10830
+    },
+    "tail": {
+      "questions": 162283,
+      "question_share": 0.9374397070121828,
+      "interactions": 179775,
+      "interaction_share": 0.2961574893950002,
+      "rank_start": 10831,
+      "rank_end": 173113
+    }
+  }
+}

@@ -18,6 +18,63 @@ def parse_int_list(value):
     return [parse_first_int(x) for x in str(value).split(",") if x != ""]
 
 
+def compute_question_frequency_counts(
+    dpath,
+    train_valid_file,
+    folds,
+    num_q,
+):
+    """Count question occurrences using only the requested training folds."""
+    path = os.path.join(dpath, train_valid_file)
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"removed_model question-frequency source not found: {path}"
+        )
+    num_q = int(num_q)
+    if num_q <= 0:
+        raise ValueError(f"removed_model question counts require num_q > 0, got {num_q}.")
+
+    df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    required = {"fold", "questions"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(
+            f"removed_model frequency source missing columns: {sorted(missing)}"
+        )
+
+    fold_set = {int(fold) for fold in folds}
+    if not fold_set:
+        raise ValueError("removed_model question-frequency folds must not be empty.")
+    selected = df[df["fold"].astype(int).isin(fold_set)]
+    if selected.empty:
+        raise ValueError(
+            f"No removed_model frequency rows found for folds {sorted(fold_set)}."
+        )
+
+    counts = np.zeros(num_q, dtype=np.int64)
+    for raw_questions in selected["questions"]:
+        for question in parse_int_list(raw_questions):
+            if question == -1:
+                continue
+            if question < 0 or question >= num_q:
+                raise ValueError(
+                    "removed_model question ID out of range in frequency source; "
+                    f"expected -1 or [0, {num_q - 1}], got {question}."
+                )
+            counts[question] += 1
+
+    nonzero = counts[counts > 0]
+    summary = {
+        "source_file": os.path.normpath(path),
+        "folds": sorted(fold_set),
+        "total_interactions": int(counts.sum()),
+        "nonzero_questions": int(nonzero.size),
+        "max_count": int(nonzero.max()) if nonzero.size else 0,
+        "mean_nonzero_count": float(nonzero.mean()) if nonzero.size else 0.0,
+    }
+    return counts, summary
+
+
 def log2_gap(value):
     import math
 
@@ -105,12 +162,25 @@ def compute_history_correctness(concepts, responses):
     return history
 
 
-def compute_dimkt_difficulty_maps(dpath, train_valid_file, diff_level):
+def compute_dimkt_difficulty_maps(dpath, train_valid_file, diff_level, folds=None):
     path = os.path.join(dpath, train_valid_file)
     if not os.path.exists(path):
         raise FileNotFoundError(f"DIMKT difficulty source not found: {path}")
 
     df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    if folds is not None:
+        if "fold" not in df.columns:
+            raise ValueError(
+                f"DIMKT difficulty source missing required 'fold' column: {path}"
+            )
+        fold_set = {int(fold) for fold in folds}
+        if not fold_set:
+            raise ValueError("DIMKT difficulty folds must not be empty.")
+        df = df[df["fold"].astype(int).isin(fold_set)]
+        if df.empty:
+            raise ValueError(
+                f"No DIMKT difficulty rows found for folds {sorted(fold_set)}."
+            )
     skill_totals = defaultdict(lambda: [0, 0])
     question_totals = defaultdict(lambda: [0, 0])
 

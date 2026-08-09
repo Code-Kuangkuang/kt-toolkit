@@ -266,6 +266,10 @@ class KTDataset(Dataset):
         for key in self.dori:
             if key in ["masks", "smasks"]:
                 continue
+            # Handle uid specially - just pass through the scalar value
+            if key == "uid":
+                dcur["uid"] = self.dori["uid"][index]
+                continue
             # Skip empty tensors/lists to avoid IndexError
             val = self.dori[key]
             if isinstance(val, list) and len(val) == 0:
@@ -284,7 +288,7 @@ class KTDataset(Dataset):
         return dcur
 
     def _load_data(self, sequence_path, folds):
-        dori = {"qseqs": [], "cseqs": [], "rseqs": [], "smasks": [], "itseqs": []}
+        dori = {"qseqs": [], "cseqs": [], "rseqs": [], "smasks": [], "itseqs": [], "uid": []}
         if self.include_dkt_forget:
             dori["rgaps"], dori["sgaps"], dori["pcounts"] = [], [], []
         if self.difficulty_maps:
@@ -301,6 +305,9 @@ class KTDataset(Dataset):
         df = _filter_rows_by_folds(df, folds, sequence_path)
 
         for _, row in df.iterrows():
+            # Extract uid (student ID)
+            uid = int(row.get("uid", row.get("student_id", -1)))
+            dori["uid"].append(uid)
             concepts = []
             questions = []
             if "concepts" in self.input_type:
@@ -381,6 +388,7 @@ class KTDataset(Dataset):
             dori["qseqs"] = torch.tensor([])
         dori["rseqs"] = torch.tensor(dori["rseqs"], dtype=torch.float)
         dori["smasks"] = torch.tensor(dori["smasks"], dtype=torch.long)
+        dori["uid"] = torch.tensor(dori["uid"], dtype=torch.long)
 
         # Convert timestamps to tensor if loaded
         if self.use_timestamps and "tseqs" in dori and len(dori["tseqs"]) > 0:
@@ -494,6 +502,10 @@ class KTQueDataset(Dataset):
         for key in self.dori:
             if key in ["masks", "smasks"]:
                 continue
+            # Handle uid specially - just pass through the scalar value
+            if key == "uid":
+                dcur["uid"] = self.dori["uid"][index]
+                continue
             # Skip empty tensors/lists to avoid IndexError
             val = self.dori[key]
             if isinstance(val, list) and len(val) == 0:
@@ -521,7 +533,7 @@ class KTQueDataset(Dataset):
         Concepts are stored as [seq_len, max_concepts] 2D array.
         Format: "1_2_3_-1" means concepts [1,2,3,-1] at one position.
         """
-        dori = {"qseqs": [], "cseqs": [], "rseqs": [], "smasks": [], "itseqs": []}
+        dori = {"qseqs": [], "cseqs": [], "rseqs": [], "smasks": [], "itseqs": [], "uid": []}
         if self.include_dkt_forget:
             dori["rgaps"], dori["sgaps"], dori["pcounts"] = [], [], []
         if self.difficulty_maps:
@@ -538,6 +550,9 @@ class KTQueDataset(Dataset):
         df = _filter_rows_by_folds(df, folds, sequence_path)
 
         for _, row in df.iterrows():
+            # Extract uid (student ID)
+            uid = int(row.get("uid", row.get("student_id", -1)))
+            dori["uid"].append(uid)
             first_concepts = []
             questions = []
             if "concepts" in self.input_type:
@@ -626,6 +641,7 @@ class KTQueDataset(Dataset):
 
         dori["rseqs"] = torch.tensor(dori["rseqs"], dtype=torch.float)
         dori["smasks"] = torch.tensor(dori["smasks"], dtype=torch.long)
+        dori["uid"] = torch.tensor(dori["uid"], dtype=torch.long)
 
         # Convert timestamps to tensor if loaded
         if self.use_timestamps and "tseqs" in dori and len(dori["tseqs"]) > 0:

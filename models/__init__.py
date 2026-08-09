@@ -6,6 +6,7 @@ from .akt import AKT
 from .sakt import SAKT
 from .qikt import QIKTNet
 from .gkt import GKT
+from .dgekt import DGEKT
 from .kqn import KQN
 from .atkt import ATKT
 from .iekt import IEKT
@@ -14,15 +15,13 @@ from .lpkt import LPKT
 from .deep_irt import DeepIRT
 from .saint import SAINT
 from .saint_plus import SAINTp
-from .gbkt import GBKT
-from .gbsvkt import GBSVKT
-from .gbktv2 import GBKTV2
-from .gbktv3 import GBKTV3
-from .gbktv4 import GBKTV4
-from .gbkt_final import GBKTFinal
-from .cgbkt import CGBKT
+from .removed_model import removed_model, GBKTTheoryConstrained
+from .removed_model import removed_model
+from .removed_model import removed_model
+from .removed_model import a removed model
 from .simplekt import SimpleKT
 from .ukt import UKT
+from .keenkt import KeenKT
 from .dkt_forget import DKTForget
 from .skvmn import SKVMN
 from .dimkt import DIMKT
@@ -35,4 +34,4 @@ from .rekt import ReKT
 from .lefokt_akt import LEFOKT_AKT
 from .hqaf import HQAFKT
 
-__all__ = ["DKT", "DKTPEBG", "DKVMN", "AKT", "DKTPlus", "SAKT", "QIKTNet", "GKT", "KQN", "ATKT", "IEKT", "HawkesKT", "LPKT", "DeepIRT", "SAINT", "SAINTp", "GBKT", "GBKTV2", "GBKTV3", "GBKTV4", "GBKTFinal", "CGBKT", "GBSVKT", "SimpleKT", "UKT", "DKTForget", "SKVMN", "DIMKT", "ATDKT", "StableKT", "SparseKT", "DTransformerModel", "RobustKT", "ReKT", "LEFOKT_AKT", "HQAFKT"]
+__all__ = ["DKT", "DKTPEBG", "DKVMN", "AKT", "DKTPlus", "SAKT", "QIKTNet", "GKT", "DGEKT", "KQN", "ATKT", "IEKT", "HawkesKT", "LPKT", "DeepIRT", "SAINT", "SAINTp", "removed_model", "removed_model", "removed_model", "a removed model", "GBKTTheoryConstrained", "SimpleKT", "UKT", "KeenKT", "DKTForget", "SKVMN", "DIMKT", "ATDKT", "StableKT", "SparseKT", "DTransformerModel", "RobustKT", "ReKT", "LEFOKT_AKT", "HQAFKT"]

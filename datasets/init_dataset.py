@@ -22,6 +22,11 @@ ALL_IN_ONE_DATASET_MODELS = {
     "lefokt",
     "hqaf",
     "hqaf_kt",
+    "keenkt",
+    "removed_model",
+    "removed_model",
+    "removed_model",
+    "dgekt",
 }
 ONE_BY_ONE_DATASET_MODELS = {"hawkes"}
 
@@ -87,7 +92,20 @@ def build_dataloaders(dataset_name, data_config, fold, batch_size, model_name=No
         max_concepts = cfg.get("max_concepts", 4)
         all_folds = set(cfg["folds"])
 
-        concept_mode = "multi" if (model_name or "").lower() in {"qikt", "gbkt", "gbktv2", "gbktv3", "gbktv4", "gbkt_final", "cgbkt"} else "first"
+        concept_mode = "multi" if (model_name or "").lower() in {
+            "qikt",
+            "removed_model",
+            "removed_model",
+            "removed_model",
+            "removed_model",
+            "removed_model_no_coverage",
+            "removed_model_no_dir",
+            "removed_model_no_q_radius",
+            "removed_model_center_only",
+            "removed_model_no_ball",
+            "removed_model_margin_only",
+            "gbkt_tc",
+        } else "first"
         train_ds = KTQueDataset(
             train_valid_path, cfg["input_type"], all_folds - {fold},
             concept_num=cfg.get("num_c", 0), max_concepts=max_concepts, concept_mode=concept_mode,
@@ -184,7 +202,20 @@ def build_test_dataloaders(dataset_name, data_config, batch_size, model_name=Non
     if dataset_mode == "all_in_one":
         test_path = _resolve_sequence_path(cfg, "test_file_quelevel", "test_file")
         max_concepts = cfg.get("max_concepts", 4)
-        concept_mode = "multi" if (model_name or "").lower() in {"qikt", "gbkt", "gbktv2", "gbktv3", "gbktv4", "gbkt_final", "cgbkt"} else "first"
+        concept_mode = "multi" if (model_name or "").lower() in {
+            "qikt",
+            "removed_model",
+            "removed_model",
+            "removed_model",
+            "removed_model",
+            "removed_model_no_coverage",
+            "removed_model_no_dir",
+            "removed_model_no_q_radius",
+            "removed_model_center_only",
+            "removed_model_no_ball",
+            "removed_model_margin_only",
+            "gbkt_tc",
+        } else "first"
         test_ds = KTQueDataset(
             test_path, cfg["input_type"], {-1},
             concept_num=cfg.get("num_c", 0), max_concepts=max_concepts, concept_mode=concept_mode,

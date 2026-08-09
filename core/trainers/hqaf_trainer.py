@@ -66,8 +66,6 @@ class HQAFTrainer(BaseTrainer):
         qdshft = _required(batch, "shft_qdseqs").to(self.device).long()
         quseqs = _required(batch, "quseqs").to(self.device).long()
         qushft = _required(batch, "shft_quseqs").to(self.device).long()
-        utseqs = _required(batch, "utTseqs").to(self.device).long()
-        utshft = _required(batch, "shft_utTseqs").to(self.device).long()
         ptseqs = _required(batch, "pTseqs").to(self.device).long()
         ptshft = _required(batch, "shft_pTseqs").to(self.device).long()
 
@@ -77,7 +75,11 @@ class HQAFTrainer(BaseTrainer):
         sd_full = torch.cat((sdseqs[:, :1], sdshft), dim=1)
         qd_full = torch.cat((qdseqs[:, :1], qdshft), dim=1)
         qu_full = torch.cat((quseqs[:, :1], qushft), dim=1)
-        ut_full = torch.cat((utseqs[:, :1], utshft), dim=1)
+        # Do not pass observed per-interaction response time here: for the
+        # prediction target at t+1 it is only known after the student answers.
+        # The question-average time bucket is fitted on training folds and is
+        # available before prediction, so it is safe to use as HQAF's cutT.
+        safe_time_full = qu_full
         pt_full = torch.cat((ptseqs[:, :1], ptshft), dim=1)
 
         preds, _ = self.model(
@@ -87,7 +89,7 @@ class HQAFTrainer(BaseTrainer):
             cd=sd_full,
             qd=qd_full,
             qu=qu_full,
-            cutT=ut_full,
+            cutT=safe_time_full,
             cpT=pt_full,
             sdshft=sdshft,
             sm=sm,

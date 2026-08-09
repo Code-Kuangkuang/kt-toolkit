@@ -1,8 +1,10 @@
 .vscode/
 .cache/
+.codex_tmp/
 .webui/
 .claude/
 .idea/
+output/
 saved_model/
 wandb/
 paper/
@@ -11,6 +13,8 @@ data/assist2009/
 data/assist2012/
 data/assist2015/
 data/assist2017/
+data/aaai2023/
+data/slepemapy/
 data/bridge2algebra2006/
 data/ednet/
 data/junyi2015/
