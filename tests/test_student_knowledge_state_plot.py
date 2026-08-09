@@ -6,7 +6,7 @@ import seaborn as sns
 import torch
 
 from models.removed_model import a removed model
-from scripts.plot_student_knowledge_state import (
+from research.removed_model.plot_student_knowledge_state import (
     CONTINUOUS_CMAPS,
     DIVERGING_CMAPS,
     heatmap_kwargs,

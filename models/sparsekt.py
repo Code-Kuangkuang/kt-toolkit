@@ -6,30 +6,6 @@ import math
 import torch.nn.functional as F
 from enum import IntEnum
 import numpy as np
-from .utils import transformer_FFN, ut_mask, pos_encode, get_clones
-from torch.nn import (
-    Module,
-    Embedding,
-    LSTM,
-    Linear,
-    Dropout,
-    LayerNorm,
-    TransformerEncoder,
-    TransformerEncoderLayer,
-    MultiLabelMarginLoss,
-    MultiLabelSoftMarginLoss,
-    CrossEntropyLoss,
-    BCELoss,
-    MultiheadAttention,
-)
-from torch.nn.functional import (
-    one_hot,
-    cross_entropy,
-    multilabel_margin_loss,
-    binary_cross_entropy,
-)
-import random
-import time
 
 from core.registry import MODEL_REGISTRY
 
@@ -735,28 +711,6 @@ class CosinePositionalEmbedding(nn.Module):
 
     def forward(self, x):
         return self.weight[:, : x.size(Dim.seq), :]  # ( 1,seq,  Feature)
-
-
-class timeGap(nn.Module):
-    def __init__(self, num_rgap, num_sgap, num_pcount, emb_size) -> None:
-        super().__init__()
-        self.rgap_eye = torch.eye(num_rgap)
-        self.sgap_eye = torch.eye(num_sgap)
-        self.pcount_eye = torch.eye(num_pcount)
-
-        input_size = num_rgap + num_sgap + num_pcount
-
-        self.time_emb = nn.Linear(input_size, emb_size, bias=False)
-
-    def forward(self, rgap, sgap, pcount):
-        rgap = self.rgap_eye[rgap].to(device)
-        sgap = self.sgap_eye[sgap].to(device)
-        pcount = self.pcount_eye[pcount].to(device)
-
-        tg = torch.cat((rgap, sgap, pcount), -1)
-        tg_emb = self.time_emb(tg)
-
-        return tg_emb
 
 
 @MODEL_REGISTRY.register("sparsekt")

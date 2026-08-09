@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from enum import IntEnum
 import numpy as np
 from torch.nn.parameter import Parameter
-from einops import rearrange, repeat
+from einops import rearrange
 
 from core.registry import MODEL_REGISTRY
 

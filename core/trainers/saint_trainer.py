@@ -6,6 +6,7 @@ from core.registry import TRAINER_REGISTRY
 from core.trainer import BaseTrainer
 
 
+@TRAINER_REGISTRY.register("saint_plus")
 @TRAINER_REGISTRY.register("saint")
 class SAINTTrainer(BaseTrainer):
     def __init__(
@@ -100,3 +101,6 @@ class SAINTTrainer(BaseTrainer):
         loss = binary_cross_entropy(pred, target)
 
         return pred, target, loss
+
+
+SAINTpTrainer = SAINTTrainer

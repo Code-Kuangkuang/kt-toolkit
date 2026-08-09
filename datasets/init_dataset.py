@@ -98,12 +98,6 @@ def build_dataloaders(dataset_name, data_config, fold, batch_size, model_name=No
             "removed_model",
             "removed_model",
             "removed_model",
-            "removed_model_no_coverage",
-            "removed_model_no_dir",
-            "removed_model_no_q_radius",
-            "removed_model_center_only",
-            "removed_model_no_ball",
-            "removed_model_margin_only",
             "gbkt_tc",
         } else "first"
         train_ds = KTQueDataset(
@@ -146,34 +140,6 @@ def build_dataloaders(dataset_name, data_config, fold, batch_size, model_name=No
     return train_loader, valid_loader
 
 
-@DATASET_REGISTRY.register("kt_quelevel")
-def build_quelevel_dataloaders(dataset_name, data_config, fold, batch_size, num_workers=0, use_timestamps=False, **kwargs):
-    """Explicitly use que-level dataset (ALL-in-One mode)."""
-    if dataset_name in data_config:
-        cfg = data_config[dataset_name]
-    else:
-        cfg = data_config
-
-    train_valid_path = _resolve_sequence_path(cfg, "train_valid_file_quelevel", "train_valid_file")
-    max_concepts = cfg.get("max_concepts", 4)
-    all_folds = set(cfg["folds"])
-
-    train_ds = KTQueDataset(
-        train_valid_path, cfg["input_type"], all_folds - {fold},
-        concept_num=cfg.get("num_c", 0), max_concepts=max_concepts,
-        use_timestamps=use_timestamps
-    )
-    valid_ds = KTQueDataset(
-        train_valid_path, cfg["input_type"], {fold},
-        concept_num=cfg.get("num_c", 0), max_concepts=max_concepts,
-        use_timestamps=use_timestamps
-    )
-
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers)
-    valid_loader = DataLoader(valid_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
-    return train_loader, valid_loader
-
-
 @DATASET_REGISTRY.register("kt_test")
 def build_test_dataloaders(dataset_name, data_config, batch_size, model_name=None, dataset_mode=None, num_workers=0, use_timestamps=False, **kwargs):
     """Build test dataloaders for evaluation.
@@ -208,12 +174,6 @@ def build_test_dataloaders(dataset_name, data_config, batch_size, model_name=Non
             "removed_model",
             "removed_model",
             "removed_model",
-            "removed_model_no_coverage",
-            "removed_model_no_dir",
-            "removed_model_no_q_radius",
-            "removed_model_center_only",
-            "removed_model_no_ball",
-            "removed_model_margin_only",
             "gbkt_tc",
         } else "first"
         test_ds = KTQueDataset(

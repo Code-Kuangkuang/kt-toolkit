@@ -12,14 +12,6 @@ class Dim:
     feature = 2
 
 
-def wasserstein_distance(mean1, cov1, mean2, cov2):
-    ret = torch.sum((mean1 - mean2) * (mean1 - mean2), -1)
-    cov1_sqrt = torch.sqrt(torch.clamp(cov1, min=1e-24))
-    cov2_sqrt = torch.sqrt(torch.clamp(cov2, min=1e-24))
-    ret = ret + torch.sum((cov1_sqrt - cov2_sqrt) * (cov1_sqrt - cov2_sqrt), -1)
-    return ret
-
-
 def d2s_1overx(distance):
     return 1 / (1 + distance)
 

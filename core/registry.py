@@ -20,4 +20,3 @@ class Registry:
 MODEL_REGISTRY = Registry("model")
 DATASET_REGISTRY = Registry("dataset")
 TRAINER_REGISTRY = Registry("trainer")
-HOOK_REGISTRY = Registry("hook")

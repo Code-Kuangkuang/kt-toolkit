@@ -1,7 +1,5 @@
-import sys
 import numpy as np
 import torch
-from torch.nn.functional import binary_cross_entropy
 
 from core.registry import TRAINER_REGISTRY
 from core.trainer import BaseTrainer

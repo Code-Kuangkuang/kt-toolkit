@@ -6,6 +6,8 @@ from core.registry import TRAINER_REGISTRY
 from core.trainer import BaseTrainer
 
 
+@TRAINER_REGISTRY.register("lefokt")
+@TRAINER_REGISTRY.register("lefokt_akt")
 @TRAINER_REGISTRY.register("akt")
 class AKTTrainer(BaseTrainer):
     def __init__(
@@ -103,3 +105,6 @@ def cal_loss(model, ys, r, rshft, sm, preloss=None):
     if preloss:
         loss = loss + preloss[0]
     return loss
+
+
+LEFOKTAKTTrainer = AKTTrainer

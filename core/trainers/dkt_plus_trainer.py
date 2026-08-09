@@ -1,6 +1,5 @@
 import numpy as np
 import torch
-from torch.nn.functional import one_hot
 
 from core.registry import TRAINER_REGISTRY
 from core.trainer import BaseTrainer

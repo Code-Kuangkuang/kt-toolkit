@@ -1,5 +1,5 @@
 from torch import cat,squeeze,unsqueeze,sum
-from torch.nn import Embedding,Module,Sigmoid,Tanh,Dropout,Linear,Parameter
+from torch.nn import Embedding,Module,Sigmoid,Tanh,Dropout,Linear
 from torch.autograd import Variable
 import torch
 import torch.nn as nn

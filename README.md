@@ -76,7 +76,8 @@ of next to sequence CSV files. Set `KT_DATASET_CACHE_DIR` to override this.
 - `datasets/`: PyTorch dataset and dataloader builders.
 - `preprocess/`: sequence generation utilities.
 - `cleaning/`: dataset cleaning pipeline and adapters.
-- `scripts/`: CLI entrypoints.
+- `scripts/`: core training, data preparation, prediction, and WebUI CLI entrypoints.
+- `research/removed_model/`: a removed model paper reproduction, ablation, analysis, statistics, and plotting workflows.
 - `webui/`: FastAPI + static WebUI orchestration layer.
 - `docs/`: architecture and implementation notes.
 

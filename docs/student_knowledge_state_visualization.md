@@ -1,6 +1,6 @@
 # a removed model 学生知识状态可视化
 
-入口脚本：`scripts/plot_student_knowledge_state.py`。
+入口脚本：`research/removed_model/plot_student_knowledge_state.py`。
 
 脚本从保存的 `run_config.json` 和 best-validation checkpoint 恢复模型，按
 `uid` 读取 question-level 序列，并绘制：
@@ -54,7 +54,7 @@ sns.heatmap(
 ## 示例
 
 ```powershell
-python scripts/plot_student_knowledge_state.py `
+python research/removed_model/plot_student_knowledge_state.py `
   --run-dir saved_model/removed_model_experiment/cv-assist2009-removed_model-20260719-144319/assist2009-removed_model-fold0-20260719-144324 `
   --split test `
   --uid 520 `
@@ -74,7 +74,7 @@ python scripts/plot_student_knowledge_state.py `
 不要按图片观感手工挑选案例。可以在 validation split 上按固定窗口协议搜索：
 
 ```powershell
-python scripts/find_removed_model_geometry_case.py `
+python research/removed_model/find_removed_model_geometry_case.py `
   --run-dir saved_model/removed_model_experiment/cv-assist2009-removed_model-20260719-144319/assist2009-removed_model-fold0-20260719-144324 `
   --split valid `
   --window-size 30 `
@@ -91,7 +91,7 @@ python scripts/find_removed_model_geometry_case.py `
 区域，因此不会把窗口起点错误地当作冷启动状态：
 
 ```powershell
-python scripts/plot_student_knowledge_state.py `
+python research/removed_model/plot_student_knowledge_state.py `
   --run-dir <fold-run-dir> `
   --split valid `
   --uid 592 `

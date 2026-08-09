@@ -38,23 +38,11 @@ MODEL_NAME_ALIASES = {
     "gbkt_tc": "removed_model",
     "gbkt-tc": "removed_model",
     "gbkt-theory": "removed_model",
-    "gbkt_tc_no_coverage": "removed_model_no_coverage",
-    "gbkt-tc-no-coverage": "removed_model_no_coverage",
-    "gbkt_tc_no_dir": "removed_model_no_dir",
-    "gbkt-tc-no-dir": "removed_model_no_dir",
-    "gbkt_tc_no_q_radius": "removed_model_no_q_radius",
-    "gbkt-tc-no-q-radius": "removed_model_no_q_radius",
-    "gbkt_tc_center_only": "removed_model_center_only",
-    "gbkt-tc-center-only": "removed_model_center_only",
-    "gbkt_tc_no_ball": "removed_model_no_ball",
-    "gbkt-tc-no-ball": "removed_model_no_ball",
-    "gbkt_tc_margin_only": "removed_model_margin_only",
-    "gbkt-tc-margin-only": "removed_model_margin_only",
     "lefokt": "lefokt_akt",
     "hqaf-kt": "hqaf",
     "hqaf_kt": "hqaf",
 }
-QUESTION_REQUIRED_MODELS = {"atdkt", "dimkt", "stablekt", "sparsekt", "robustkt", "dtransformer", "rekt", "lefokt_akt", "hqaf", "keenkt", "dgekt", "removed_model", "removed_model", "removed_model", "removed_model", "removed_model_no_coverage", "removed_model_no_dir", "removed_model_no_q_radius", "removed_model_center_only", "removed_model_no_ball", "removed_model_margin_only"}
+QUESTION_REQUIRED_MODELS = {"atdkt", "dimkt", "stablekt", "sparsekt", "robustkt", "dtransformer", "rekt", "lefokt_akt", "hqaf", "keenkt", "dgekt", "removed_model", "removed_model", "removed_model", "removed_model"}
 ALL_IN_ONE_MODELS = {
     "lpkt",
     "atdkt",
@@ -74,12 +62,6 @@ ALL_IN_ONE_MODELS = {
     "removed_model",
     "removed_model",
     "dgekt",
-    "removed_model_no_coverage",
-    "removed_model_no_dir",
-    "removed_model_no_q_radius",
-    "removed_model_center_only",
-    "removed_model_no_ball",
-    "removed_model_margin_only",
 }
 ONE_BY_ONE_MODELS = {"hawkes"}
 
@@ -121,21 +103,6 @@ def _build_removed_model_question_frequency(
         train_file,
         folds=train_folds,
         num_q=dataset_cfg["num_q"],
-    )
-
-
-def _build_removed_model_question_frequency(
-    model_name,
-    dataset_cfg,
-    dataset_mode,
-    fold_id,
-):
-    """Backward-compatible wrapper used by existing removed_model research tests."""
-    return _build_removed_model_question_frequency(
-        model_name=model_name,
-        dataset_cfg=dataset_cfg,
-        dataset_mode=dataset_mode,
-        fold_id=fold_id,
     )
 
 

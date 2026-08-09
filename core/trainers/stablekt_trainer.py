@@ -6,6 +6,7 @@ from core.registry import TRAINER_REGISTRY
 from core.trainer import BaseTrainer
 
 
+@TRAINER_REGISTRY.register("sparsekt")
 @TRAINER_REGISTRY.register("stablekt")
 class StableKTTrainer(BaseTrainer):
     def __init__(
@@ -81,3 +82,6 @@ def _masked_bce(preds, target, mask):
     y = torch.masked_select(preds.double(), mask)
     t = torch.masked_select(target.double(), mask)
     return binary_cross_entropy(y, t)
+
+
+SparseKTTrainer = StableKTTrainer

@@ -2,7 +2,7 @@ from .dkt_trainer import DKTTrainer  # noqa: F401
 from .dkt_pebg_trainer import DKTPEBGTrainer  # noqa: F401
 from .dkt_plus_trainer import DKTPlusTrainer  # noqa: F401
 from .dkvmn_trainer import DKVMNTrainer  # noqa: F401
-from .akt_trainer import AKTTrainer  # noqa: F401
+from .akt_trainer import AKTTrainer, LEFOKTAKTTrainer  # noqa: F401
 from .sakt_trainer import SAKTTrainer  # noqa: F401
 from .qikt_trainer import QIKTTrainer  # noqa: F401
 from .gkt_trainer import GKTTrainer  # noqa: F401
@@ -13,8 +13,7 @@ from .iekt_trainer import IEKTTrainer  # noqa: F401
 from .hawkes_trainer import HawkesTrainer  # noqa: F401
 from .lpkt_trainer import LPKTTrainer  # noqa: F401
 from .deep_irt_trainer import DeepIRTTrainer  # noqa: F401
-from .saint_trainer import SAINTTrainer  # noqa: F401
-from .saint_plus_trainer import SAINTpTrainer  # noqa: F401
+from .saint_trainer import SAINTTrainer, SAINTpTrainer  # noqa: F401
 from .removed_model_trainer import removed_modelTrainer, GBKTTheoryConstrainedTrainer  # noqa: F401
 from .removed_model_trainer import removed_modelTrainer  # noqa: F401
 from .removed_model_trainer import removed_modelTrainer  # noqa: F401
@@ -26,10 +25,8 @@ from .dkt_forget_trainer import DKTForgetTrainer  # noqa: F401
 from .skvmn_trainer import SKVMNTrainer  # noqa: F401
 from .dimkt_trainer import DIMKTTrainer  # noqa: F401
 from .atdkt_trainer import ATDKTTrainer  # noqa: F401
-from .stablekt_trainer import StableKTTrainer  # noqa: F401
-from .sparsekt_trainer import SparseKTTrainer  # noqa: F401
+from .stablekt_trainer import SparseKTTrainer, StableKTTrainer  # noqa: F401
 from .dtransformer_trainer import DTransformerTrainer  # noqa: F401
 from .robustkt_trainer import RobustKTTrainer  # noqa: F401
 from .rekt_trainer import ReKTTrainer  # noqa: F401
-from .lefokt_akt_trainer import LEFOKTAKTTrainer  # noqa: F401
 from .hqaf_trainer import HQAFTrainer  # noqa: F401

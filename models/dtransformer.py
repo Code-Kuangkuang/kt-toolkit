@@ -1,12 +1,8 @@
 import torch
 import random
 from torch import nn
-from torch.nn.init import xavier_uniform_
-from torch.nn.init import constant_
 import math
 import torch.nn.functional as F
-from enum import IntEnum
-import numpy as np
 
 from core.registry import MODEL_REGISTRY
 

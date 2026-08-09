@@ -2,7 +2,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.autograd import Variable
 
 from core.registry import MODEL_REGISTRY
 
@@ -145,13 +144,3 @@ class ATKT(nn.Module):
 def ut_mask(seq_len):
     """Upper triangular mask for causal attention."""
     return torch.triu(torch.ones(seq_len, seq_len), diagonal=1).to(dtype=torch.bool).to(device)
-
-
-def _l2_normalize_adv(d):
-    """L2 normalize adversarial perturbation."""
-    if isinstance(d, Variable):
-        d = d.data.cpu().numpy()
-    elif isinstance(d, torch.FloatTensor) or isinstance(d, torch.cuda.FloatTensor):
-        d = d.cpu().numpy()
-    d /= (np.sqrt(np.sum(d ** 2, axis=(1, 2))).reshape((-1, 1, 1)) + 1e-16)
-    return torch.from_numpy(d)

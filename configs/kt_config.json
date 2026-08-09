@@ -85,12 +85,6 @@
         "dropout": 0.2,
         "fix": true
     },
-    "atktfix": {
-        "learning_rate": 1e-3,
-        "skill_dim": 80,
-        "answer_dim": 80,
-        "hidden_dim": 80
-    },
     "dkt_forget": {
         "learning_rate": 1e-3,
         "emb_size": 200,

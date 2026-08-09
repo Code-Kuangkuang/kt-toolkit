@@ -3,11 +3,9 @@
 
 import torch
 import torch.nn as nn
-from torch.nn import Module, Parameter, Embedding, Linear, MaxPool1d, AvgPool1d, Dropout, LSTM
+from torch.nn import Module, Parameter, Embedding, Linear, Dropout
 from torch.nn.init import kaiming_normal_
 import torch.nn.functional as F
-import numpy as np
-import datetime
 # from models.utils import RobertaEncode
 
 from core.registry import MODEL_REGISTRY

@@ -33,11 +33,6 @@ def ut_mask(seq_len):
     return torch.triu(torch.ones(seq_len, seq_len), diagonal=1).to(dtype=torch.bool).to(device)
 
 
-def lt_mask(seq_len):
-    """Lower triangular mask."""
-    return torch.tril(torch.ones(seq_len, seq_len), diagonal=-1).to(dtype=torch.bool).to(device)
-
-
 def pos_encode(seq_len):
     """Position encoding indices."""
     return torch.arange(seq_len).unsqueeze(0).to(device)

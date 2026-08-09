@@ -5,7 +5,9 @@ for datasets, models, trainers, and the WebUI.
 
 ## Layers
 
-- Entry layer: CLI scripts in `scripts/` and the optional WebUI in `webui/`.
+- Entry layer: core CLI scripts in `scripts/` and the optional WebUI in `webui/`.
+- Research layer: paper-specific reproduction and analysis workflows in
+  `research/`, currently grouped under `research/removed_model/`.
 - Configuration layer: `configs/kt_config.json`, `configs/data_config.json`,
   and dataset YAML files.
 - Core framework: registry, factory, hooks, base trainer, and training runner
@@ -59,7 +61,6 @@ The project uses import-time registration:
 - `MODEL_REGISTRY` for model classes.
 - `DATASET_REGISTRY` for dataloader builders.
 - `TRAINER_REGISTRY` for trainer classes.
-- `HOOK_REGISTRY` for optional hook extensions.
 
 Factories in `core/factory.py` construct registered objects by name and filter
 unsupported constructor arguments when possible.

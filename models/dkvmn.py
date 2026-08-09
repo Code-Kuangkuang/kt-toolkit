@@ -1,6 +1,3 @@
-import os
-
-import numpy as np
 import torch
 
 from torch.nn import Module, Parameter, Embedding, Linear, Dropout

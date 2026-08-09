@@ -1,4 +1,4 @@
-import os, sys
+import os
 
 def process_raw_data(dataset_name,dname2paths):
     readf = dname2paths[dataset_name]

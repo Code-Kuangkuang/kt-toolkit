@@ -2,7 +2,6 @@
 # coding=utf-8
 
 import pandas as pd
-import numpy as np
 from .utils import sta_infos, write_txt, format_list2str, change2timestamp, replace_text
 
 KEYS = ["Anon Student Id", "KC(SubSkills)", "Questions"]
