@@ -268,10 +268,9 @@ def train_one_fold(
                           "output_mode", "output_c_all_lambda", "output_c_next_lambda", "output_q_all_lambda",
                           "output_q_next_lambda", "emb_type", "learning_rate", "use_timestamps", "dpath",
                            "num_at", "num_it", "booster_strategy", "require_fold_embedding",
-                          "lambda_item_difficulty", "lambda_rel", "lambda_kl",
-                          "lambda_prior", "kl_warmup_epochs", "clean_prior",
-                          "lambda_move", "lambda_item", "lambda_coverage_gate",
-                          "lambda_response_gate"}
+                           "lambda_item_difficulty", "lambda_rel", "lambda_kl",
+                           "lambda_prior", "kl_warmup_epochs", "clean_prior",
+                           "lambda_move", "lambda_item"}
     model_kwargs = {k: v for k, v in model_cfg_local.items() if k not in other_config_keys}
     if removed_model_question_counts is not None:
         model_kwargs["question_counts"] = removed_model_question_counts

@@ -5,6 +5,9 @@
 .claude/
 .idea/
 output/
+tmp/
+.pytest_cache/
+.codex-paper-build/
 saved_model/
 wandb/
 paper/
