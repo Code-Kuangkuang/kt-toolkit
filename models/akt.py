@@ -10,6 +10,7 @@ import numpy as np
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 from core.registry import MODEL_REGISTRY
+from .multi_concept import pool_concept_embeddings, pool_interaction_embeddings
 
 class Dim(IntEnum):
     batch = 0
@@ -95,10 +96,13 @@ class AKT(nn.Module):
                 torch.nn.init.constant_(p, 0.)
 
     def base_emb(self, q_data, target):
-        q_embed_data = self.q_embed(q_data)  # BS, seqlen,  d_model# c_ct
+        q_embed_data = pool_concept_embeddings(
+            self.q_embed, q_data, self.n_question
+        )
         if self.separate_qa:
-            qa_data = q_data + self.n_question * target
-            qa_embed_data = self.qa_embed(qa_data)
+            qa_embed_data = pool_interaction_embeddings(
+                self.qa_embed, q_data, target, self.n_question
+            )
         else:
             # BS, seqlen, d_model # c_ct+ g_rt =e_(ct,rt)
             qa_embed_data = self.qa_embed(target)+q_embed_data
@@ -112,7 +116,9 @@ class AKT(nn.Module):
 
         pid_embed_data = None
         if self.n_pid > 0: # have problem id
-            q_embed_diff_data = self.q_embed_diff(q_data)  # d_ct 总结了包含当前question（concept）的problems（questions）的变化
+            q_embed_diff_data = pool_concept_embeddings(
+                self.q_embed_diff, q_data, self.n_question
+            )
             pid_embed_data = self.difficult_param(pid_data)  # uq 当前problem的难度
             q_embed_data = q_embed_data + pid_embed_data * \
                 q_embed_diff_data  # uq *d_ct + c_ct # question encoder
@@ -237,7 +243,7 @@ class TransformerLayer(nn.Module):
         seqlen, batch_size = query.size(1), query.size(0)
         nopeek_mask = np.triu(
             np.ones((1, 1, seqlen, seqlen)), k=mask).astype('uint8')
-        src_mask = (torch.from_numpy(nopeek_mask) == 0).to(device)
+        src_mask = (torch.from_numpy(nopeek_mask) == 0).to(query.device)
         if mask == 0:  # If 0, zero-padding is needed.
             # Calls block.masked_attn_head.forward() method
             query2 = self.masked_attn_head(
@@ -353,7 +359,7 @@ class MultiHeadAttention(nn.Module):
     def pad_zero(self, scores, bs, dim, zero_pad):
         if zero_pad:
             # # need: torch.Size([64, 1, 200]), scores: torch.Size([64, 200, 200]), v: torch.Size([64, 200, 32])
-            pad_zero = torch.zeros(bs, 1, dim).to(device)
+            pad_zero = scores.new_zeros(bs, 1, dim)
             scores = torch.cat([pad_zero, scores[:, 0:-1, :]], dim=1) # 所有v后置一位
         return scores
 
@@ -367,19 +373,20 @@ def attention(q, k, v, d_k, mask, dropout, zero_pad, gamma=None, pdiff=None):
         math.sqrt(d_k)  # BS, 8, seqlen, seqlen
     bs, head, seqlen = scores.size(0), scores.size(1), scores.size(2)
 
-    x1 = torch.arange(seqlen).expand(seqlen, -1).to(device)
+    x1 = torch.arange(seqlen, device=scores.device).expand(seqlen, -1)
     x2 = x1.transpose(0, 1).contiguous()
 
     with torch.no_grad():
         scores_ = scores.masked_fill(mask == 0, -1e32)
         scores_ = F.softmax(scores_, dim=-1)  # BS,8,seqlen,seqlen
-        scores_ = scores_ * mask.float().to(device) # 结果和上一步一样
+        scores_ = scores_ * mask.to(dtype=scores.dtype) # 结果和上一步一样
         distcum_scores = torch.cumsum(scores_, dim=-1)  # bs, 8, sl, sl
         disttotal_scores = torch.sum(
             scores_, dim=-1, keepdim=True)  # bs, 8, sl, 1 全1
         # print(f"distotal_scores: {disttotal_scores}")
-        position_effect = torch.abs(
-            x1-x2)[None, None, :, :].type(torch.FloatTensor).to(device)  # 1, 1, seqlen, seqlen 位置差值
+        position_effect = torch.abs(x1-x2)[None, None, :, :].to(
+            dtype=scores.dtype
+        )  # 1, 1, seqlen, seqlen 位置差值
         # bs, 8, sl, sl positive distance
         dist_scores = torch.clamp(
             (disttotal_scores-distcum_scores)*position_effect, min=0.) # score <0 时，设置为0
@@ -402,7 +409,7 @@ def attention(q, k, v, d_k, mask, dropout, zero_pad, gamma=None, pdiff=None):
     # print(f"before zero pad scores: {scores.shape}")
     # print(zero_pad)
     if zero_pad:
-        pad_zero = torch.zeros(bs, head, 1, seqlen).to(device)
+        pad_zero = scores.new_zeros(bs, head, 1, seqlen)
         scores = torch.cat([pad_zero, scores[:, :, 1:, :]], dim=2) # 第一行score置0
     # print(f"after zero pad scores: {scores}")
     scores = dropout(scores)

@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 
 from core.registry import MODEL_REGISTRY
+from .multi_concept import pool_concept_embeddings, pool_interaction_embeddings
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -115,14 +116,15 @@ class KQN(nn.Module):
         r = r.long()
 
         if q.numel() > 0:
-            q_min = int(q.min().item())
+            # -1 is the dataset's padding marker and is masked out by the
+            # pooling below, so only ids at or above num_c are out of range.
             q_max = int(q.max().item())
-            qs_min = int(qshft.min().item())
             qs_max = int(qshft.max().item())
-            if q_min < 0 or qs_min < 0 or q_max >= self.num_c or qs_max >= self.num_c:
+            bad_low = int(q.min().item()) < -1 or int(qshft.min().item()) < -1
+            if bad_low or q_max >= self.num_c or qs_max >= self.num_c:
                 raise ValueError(
-                    f"KQN ids out of range: q in [{q_min}, {q_max}], "
-                    f"qshft in [{qs_min}, {qs_max}], expected [0, {self.num_c - 1}]."
+                    f"KQN ids out of range: q max {q_max}, qshft max {qs_max}, "
+                    f"expected -1 (padding) or [0, {self.num_c - 1}]."
                 )
 
         if r.numel() > 0:
@@ -131,9 +133,20 @@ class KQN(nn.Module):
             if r_min < 0 or r_max > 1:
                 raise ValueError(f"KQN responses must be 0/1, got range [{r_min}, {r_max}].")
 
-        # Create one-hot encoding: r * num_c + q
-        in_data = self.two_eye[r * self.num_c + q]
-        next_skills = self.eye[qshft.long()]
+        # One-hot encoding r * num_c + q.  The lookup tables are identity
+        # buffers rather than nn.Embedding, so they are wrapped to reuse the
+        # same pooling the other models use: identity on [B,T], and on [B,T,K]
+        # the mean of the question's K one-hot rows with -1 padding masked.
+        # That mean is a soft multi-hot giving each KC weight 1/K, which is the
+        # natural reading of "this question exercises K concepts" -- but note it
+        # changes the input scale from 1 to 1/K, unlike a learned embedding
+        # where pooling keeps the magnitude roughly constant.
+        in_data = pool_interaction_embeddings(
+            lambda ids: self.two_eye[ids], q, r, self.num_c
+        )
+        next_skills = pool_concept_embeddings(
+            lambda ids: self.eye[ids], qshft, self.num_c
+        )
 
         # Encode knowledge state using RNN
         encoded_knowledge = self.encode_knowledge(in_data)

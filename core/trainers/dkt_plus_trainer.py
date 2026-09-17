@@ -3,6 +3,7 @@ import torch
 
 from core.registry import TRAINER_REGISTRY
 from core.trainer import BaseTrainer
+from models.multi_concept import pool_concept_predictions
 
 
 @TRAINER_REGISTRY.register("dkt+")
@@ -60,10 +61,15 @@ class DKTPlusTrainer(BaseTrainer):
         sm = batch["smasks"].to(self.device)
 
         y = self.model(cseqs, rseqs)
-        
 
-        y_next = y.gather(-1, cshft.unsqueeze(-1)).squeeze(-1)
-        y_curr = y.gather(-1, cseqs.unsqueeze(-1)).squeeze(-1)
+        # A plain gather breaks on [B,T,K] concepts and would force the dataset
+        # to truncate to KC 1.  Pooling the per-KC predictions instead averages
+        # over the question's KCs, which is what DKT does here and what pykt
+        # does in qikt.py.
+        y_next, target_has_concept = pool_concept_predictions(y, cshft, y.size(-1))
+        y_curr, _ = pool_concept_predictions(y, cseqs, y.size(-1))
+        if torch.any(sm.bool() & ~target_has_concept):
+            raise ValueError("DKT+ found a scored question without a valid concept id.")
 
         pred = torch.masked_select(y_next, sm)
         target = torch.masked_select(rshft, sm)

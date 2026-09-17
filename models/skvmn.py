@@ -9,6 +9,7 @@ import torch.nn.functional as F
 # from models.utils import RobertaEncode
 
 from core.registry import MODEL_REGISTRY
+from .multi_concept import pool_concept_embeddings, pool_interaction_embeddings
 
 
 device = "cpu" if not torch.cuda.is_available() else "cuda"
@@ -361,9 +362,16 @@ class SKVMN(Module):
         self.seqlen = q.shape[1]
 
         if emb_type == "qid":
-            x = q + self.num_c * r
-            k = self.k_emb_layer(q)
-            #v = self.v_emb_layer(x)
+            # Both helpers are the identity on [B,T]; on [B,T,K] they mean-pool
+            # the question's KCs with -1 padding masked, as pykt's
+            # QueEmb.get_avg_skill_emb does.  The interaction embedding is
+            # pooled here for the whole sequence rather than per step, because
+            # the write loop below indexes it one timestep at a time and a
+            # [B,T,K] id tensor cannot be embedded there.
+            k = pool_concept_embeddings(self.k_emb_layer, q, self.num_c)
+            x_emb = pool_interaction_embeddings(
+                self.x_emb_layer, q, r, self.num_c
+            )
 
         # modify 生成每道题对应的yt onehot向量
         # print(f"generate yt onehot start:{datetime.datetime.now()}")
@@ -431,7 +439,7 @@ class SKVMN(Module):
             if self.use_onehot:
                 y = r_onehot_content[:,i,:]
             else:
-                y = self.x_emb_layer(x[:,i])
+                y = x_emb[:, i]
                 # print(f"y: {y.shape}")
                 # y = r.permute(1,0)[i].unsqueeze(1).expand_as(f)
             # print(f"y: {y.shape}")

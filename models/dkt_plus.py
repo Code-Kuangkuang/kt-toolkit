@@ -2,6 +2,7 @@ import torch
 from torch.nn import Module, Embedding, LSTM, Linear, Dropout
 
 from core.registry import MODEL_REGISTRY
+from .multi_concept import pool_interaction_embeddings
 
 @MODEL_REGISTRY.register("dkt+")
 class DKTPlus(Module):
@@ -26,11 +27,14 @@ class DKTPlus(Module):
     def forward(self, q, r):
         emb_type = self.emb_type
         if emb_type == "qid":
-            q = q.long().clamp(min=0, max=self.num_c - 1)
             # Test sequences can contain -1 (unknown future response); map to valid index range.
             r = r.long().clamp(min=0, max=1)
-            x = q + self.num_c * r
-            xemb = self.interaction_emb(x)
+            # Identity on [B,T]; on [B,T,K] this mean-pools the question's KCs
+            # with the -1 padding masked out, matching DKT and pykt's
+            # QueEmb.get_avg_skill_emb.  The helper clamps the ids itself.
+            xemb = pool_interaction_embeddings(
+                self.interaction_emb, q, r, self.num_c
+            )
 
         h, _ = self.lstm_layer(xemb)
         h = self.dropout_layer(h)

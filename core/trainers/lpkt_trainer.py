@@ -94,6 +94,8 @@ class LPKTTrainer(BaseTrainer):
         # Note: pykt passes itseqs directly, not calculating from tseqs
         qseqs = batch.get("qseqs")  # exercises
         qshft = batch.get("shft_qseqs")
+        cseqs = batch.get("cseqs")
+        cshft = batch.get("shft_cseqs")
         rseqs = batch["rseqs"].to(self.device)  # answers
         itseqs = batch.get("itseqs")  # interaction time intervals (pre-computed)
         itshft = batch.get("shft_itseqs")
@@ -107,6 +109,15 @@ class LPKTTrainer(BaseTrainer):
         # Build full sequences (same as pykt)
         e_data = torch.cat((qseqs[:, 0:1], qshft), dim=1) if qseqs is not None else None
         a_data = torch.cat((rseqs[:, 0:1], rshft), dim=1)
+        concept_data = (
+            torch.cat((cseqs[:, 0:1], cshft), dim=1)
+            if cseqs is not None and cshft is not None
+            else None
+        )
+        transition_mask = batch["masks"].to(self.device).bool()
+        valid_mask = torch.cat(
+            (transition_mask[:, 0:1], transition_mask), dim=1
+        )
 
         # Build it_data (interaction time) - same as pykt
         # pykt: cit = torch.cat((dcur["itseqs"][:,0:1], dcur["shft_itseqs"]), dim=1)
@@ -118,6 +129,16 @@ class LPKTTrainer(BaseTrainer):
         else:
             # LPKT requires timestamps - warn if not available
             print(f"Warning: itseqs={itseqs is not None}, itshft={itshft is not None}, use_time={self.model.use_time}")
+
+        at_data = None
+        if self.model.use_runtime_concepts:
+            atseqs = batch.get("utseqs")
+            atshft = batch.get("shft_utseqs")
+            if atseqs is not None and atshft is not None:
+                at_data = torch.cat((atseqs[:, 0:1], atshft), dim=1).long()
+                at_data = self._bucketize_time(
+                    at_data, self.model.at_embed.num_embeddings - 1
+                )
 
         # Validate index ranges explicitly to avoid opaque CUDA device-side asserts.
         if e_data is not None:
@@ -144,9 +165,19 @@ class LPKTTrainer(BaseTrainer):
         a_data = a_data.to(self.device)
         if it_data is not None:
             it_data = it_data.to(self.device)
+        if concept_data is not None:
+            concept_data = concept_data.to(self.device).long()
+        if at_data is not None:
+            at_data = at_data.to(self.device)
 
-        # Forward - pykt only passes it_data, not at_data
-        predictions = self.model(e_data, a_data, it_data=it_data, at_data=None)
+        predictions = self.model(
+            e_data,
+            a_data,
+            it_data=it_data,
+            at_data=at_data,
+            concept_data=concept_data,
+            valid_mask=valid_mask,
+        )
 
         # Use predictions from position 1 onwards (same as pykt: y[:, 1:])
         predictions = predictions[:, 1:]

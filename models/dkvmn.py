@@ -4,6 +4,7 @@ from torch.nn import Module, Parameter, Embedding, Linear, Dropout
 from torch.nn.init import kaiming_normal_
 
 from core.registry import MODEL_REGISTRY
+from .multi_concept import pool_concept_embeddings, pool_interaction_embeddings
 
 @MODEL_REGISTRY.register("dkvmn")
 class DKVMN(Module):
@@ -47,9 +48,14 @@ class DKVMN(Module):
         emb_type = self.emb_type
         batch_size = q.shape[0]
         if emb_type == "qid":
-            x = q + self.num_c * r
-            k = self.k_emb_layer(q)
-            v = self.v_emb_layer(x)
+            # q is [B,T] under one_by_one and [B,T,K] under all_in_one. Both
+            # helpers are the identity on [B,T], so the concept-level path is
+            # untouched; on [B,T,K] they mean-pool the valid KCs and mask the
+            # -1 padding, which is what pykt's QueEmb.get_avg_skill_emb does.
+            # Taking only KC 1 instead would silently drop up to max_concepts-1
+            # of them, which pykt never does.
+            k = pool_concept_embeddings(self.k_emb_layer, q, self.num_c)
+            v = pool_interaction_embeddings(self.v_emb_layer, q, r, self.num_c)
 
         Mvt = self.Mv0.unsqueeze(0).repeat(batch_size, 1, 1)
 

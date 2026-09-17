@@ -12,6 +12,14 @@ from .feature_utils import compute_dkt_forget_gaps, compute_history_correctness,
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CACHE_DIR = PROJECT_ROOT / ".cache" / "kt_dataset"
 
+# One-by-one mode expands a multi-KC question into consecutive rows that all
+# carry the SAME response, flagged by the `is_repeat` column.  Scoring those
+# rows asks the model to predict a label its own input history already contains,
+# so they are dropped from supervision.  On assist2009 they are 15.6% of the
+# scored positions, which is why concept-level AUC used to read far above the
+# question-level number.  Set KT_SCORE_REPEATED_KC=1 to reproduce old runs.
+SCORE_REPEATED_KC = os.environ.get("KT_SCORE_REPEATED_KC", "0") == "1"
+
 
 def _dataset_cache_path(file_path, tag):
     path = Path(file_path).resolve()
@@ -60,6 +68,9 @@ def _feature_cache_tag(
         qtime_body = "|".join(f"{k}:{v}" for k, v in sorted(qtime.items()))
         edge_body = "|".join(str(v) for v in hqaf_feature_maps.get("time_bin_edges", []))
         parts.append(hashlib.sha1((qtime_body + "|" + edge_body).encode("utf-8")).hexdigest()[:10])
+    # Part of the cache key: the supervision mask changes with this flag, so a
+    # pickle written under the old behaviour must not be reused under the new.
+    parts.append("screp1" if SCORE_REPEATED_KC else "screp0")
     return "_".join(parts)
 
 
@@ -167,12 +178,41 @@ def _filter_rows_by_folds(df, folds, sequence_path):
 
 
 def _resolve_selectmasks(row, responses):
-    """Use provided selectmasks, or derive from responses when missing."""
+    """Supervision mask for one sequence, as (mask, n_repeat_positions_dropped).
+
+    Uses the provided selectmasks, or derives them from the responses when the
+    column is missing or the wrong length.  Positions flagged by `is_repeat` are
+    then set to -1 so they are not scored: they are the extra KC rows of a
+    question whose response is already visible earlier in the same sequence.
+    Question-level files carry no `is_repeat` column and are left untouched.
+    """
+    raw_masks = None
     if "selectmasks" in row.index and row["selectmasks"]:
-        raw_masks = [int(x) for x in row["selectmasks"].split(",")]
-        if len(raw_masks) == len(responses):
-            return raw_masks
-    return [1 if r != -1 else -1 for r in responses]
+        parsed = [int(x) for x in row["selectmasks"].split(",")]
+        if len(parsed) == len(responses):
+            raw_masks = parsed
+    if raw_masks is None:
+        raw_masks = [1 if r != -1 else -1 for r in responses]
+
+    if SCORE_REPEATED_KC or "is_repeat" not in row.index or not row["is_repeat"]:
+        return raw_masks, 0
+    repeats = _parse_int_sequence(row["is_repeat"])
+    if len(repeats) != len(raw_masks):
+        return raw_masks, 0
+    dropped = sum(1 for m, rep in zip(raw_masks, repeats) if rep == 1 and m != -1)
+    return [-1 if rep == 1 else m for m, rep in zip(raw_masks, repeats)], dropped
+
+
+def _report_repeat_filter(sequence_path, dropped, kept):
+    """Say out loud how much supervision the repeat filter removed.  Silence
+    here would make a protocol change look like a model change."""
+    if not dropped:
+        return
+    total = dropped + kept
+    print(
+        f"Repeated-KC positions excluded from scoring: {dropped}/{total} "
+        f"({dropped / total:.1%}) in {Path(sequence_path).name}"
+    )
 
 
 def _parse_int_sequence(value):
@@ -221,6 +261,7 @@ class KTDataset(Dataset):
         hqaf_feature_maps=None,
     ):
         super().__init__()
+        self.dataset_mode = "one_by_one"
         self.input_type = input_type
         self.pad_val = pad_val
         self.use_timestamps = use_timestamps
@@ -289,6 +330,8 @@ class KTDataset(Dataset):
 
     def _load_data(self, sequence_path, folds):
         dori = {"qseqs": [], "cseqs": [], "rseqs": [], "smasks": [], "itseqs": [], "uid": []}
+        repeat_dropped = 0
+        scored_kept = 0
         if self.include_dkt_forget:
             dori["rgaps"], dori["sgaps"], dori["pcounts"] = [], [], []
         if self.difficulty_maps:
@@ -318,7 +361,10 @@ class KTDataset(Dataset):
                 dori["qseqs"].append(questions)
             responses = _parse_int_sequence(row["responses"])
             dori["rseqs"].append(responses)
-            dori["smasks"].append(_resolve_selectmasks(row, responses))
+            smask, n_repeat_dropped = _resolve_selectmasks(row, responses)
+            dori["smasks"].append(smask)
+            repeat_dropped += n_repeat_dropped
+            scored_kept += sum(1 for m in smask if m != -1)
             if self.include_dkt_forget:
                 if "timestamps" not in row.index or not row["timestamps"]:
                     raise ValueError(f"DKT-forget requires timestamps in {sequence_path}.")
@@ -348,6 +394,8 @@ class KTDataset(Dataset):
                 dori["tseqs"].append(timestamps)
                 dori["itseqs"].append(_build_itseqs(raw_timestamps, len(responses), self.time_idx_maps))
                 dori["utseqs"].append(_build_utseqs(row, len(responses), self.time_idx_maps))
+
+        _report_repeat_filter(sequence_path, repeat_dropped, scored_kept)
 
         dori["cseqs"] = _pad_1d_sequences(dori["cseqs"], self.pad_val)
         dori["qseqs"] = _pad_1d_sequences(dori["qseqs"], self.pad_val)
@@ -444,6 +492,7 @@ class KTQueDataset(Dataset):
         hqaf_feature_maps=None,
     ):
         super().__init__()
+        self.dataset_mode = "all_in_one"
         self.input_type = input_type
         self.concept_num = concept_num
         self.max_concepts = max_concepts
@@ -456,6 +505,14 @@ class KTQueDataset(Dataset):
         self.include_history = include_history
         self.include_hqaf_attrs = include_hqaf_attrs
         self.hqaf_feature_maps = hqaf_feature_maps or {}
+        if concept_mode == "first" and int(max_concepts or 1) > 1:
+            # Silence here is how a comparison table ends up mixing models that
+            # saw every KC of a question with models that saw only the first.
+            print(
+                f"Concept truncation: this model reads KC 1 of up to "
+                f"{int(max_concepts)} per question; the rest are discarded. "
+                f"Only comparable with other concept_mode='first' runs."
+            )
         folds = sorted(list(folds))
         folds_str = "_" + "_".join([str(f) for f in folds])
         cache_tag = (
@@ -517,6 +574,9 @@ class KTQueDataset(Dataset):
             if key == "rseqs":
                 cur = _sanitize_response_sequence(cur)
             if key == "cseqs" and cur.dim() >= 2 and self.concept_mode == "first":
+                # Keeps only KC 1 and discards the rest.  Announced once at
+                # construction -- a table that mixes this with concept_mode
+                # 'multi' is comparing models shown different questions.
                 cur = cur[:, 0]
 
             seqs = _apply_time_mask(cur[:-1], mseqs)
@@ -534,6 +594,8 @@ class KTQueDataset(Dataset):
         Format: "1_2_3_-1" means concepts [1,2,3,-1] at one position.
         """
         dori = {"qseqs": [], "cseqs": [], "rseqs": [], "smasks": [], "itseqs": [], "uid": []}
+        repeat_dropped = 0
+        scored_kept = 0
         if self.include_dkt_forget:
             dori["rgaps"], dori["sgaps"], dori["pcounts"] = [], [], []
         if self.difficulty_maps:
@@ -563,7 +625,11 @@ class KTQueDataset(Dataset):
                         skills = [-1] * self.max_concepts
                     else:
                         skills = [int(float(_)) for _ in concept.split("_") if _ != ""]
-                        skills = skills[:self.max_concepts]
+                        if len(skills) > self.max_concepts:
+                            raise ValueError(
+                                f"Question has {len(skills)} concepts in {sequence_path}, "
+                                f"exceeding max_concepts={self.max_concepts}."
+                            )
                         skills = skills + [-1] * (self.max_concepts - len(skills))
                     row_skills.append(skills)
                     first_concepts.append(skills[0] if skills else -1)
@@ -573,7 +639,10 @@ class KTQueDataset(Dataset):
                 dori["qseqs"].append(questions)
             responses = _parse_int_sequence(row["responses"])
             dori["rseqs"].append(responses)
-            dori["smasks"].append(_resolve_selectmasks(row, responses))
+            smask, n_repeat_dropped = _resolve_selectmasks(row, responses)
+            dori["smasks"].append(smask)
+            repeat_dropped += n_repeat_dropped
+            scored_kept += sum(1 for m in smask if m != -1)
             if self.include_dkt_forget:
                 rgap, sgap, pcount = compute_dkt_forget_gaps(row, self.input_type)
                 dori["rgaps"].append(_fit_sequence(rgap, len(responses), 0))
@@ -602,6 +671,8 @@ class KTQueDataset(Dataset):
                 dori["itseqs"].append(_build_itseqs(raw_timestamps, len(responses), self.time_idx_maps))
                 dori["utseqs"].append(_build_utseqs(row, len(responses), self.time_idx_maps))
 
+        _report_repeat_filter(sequence_path, repeat_dropped, scored_kept)
+
         dori["cseqs"] = _pad_2d_sequences(dori["cseqs"], [-1] * self.max_concepts)
         dori["qseqs"] = _pad_1d_sequences(dori["qseqs"], self.pad_val)
         dori["rseqs"] = _pad_1d_sequences(dori["rseqs"], self.pad_val)
@@ -628,7 +699,7 @@ class KTQueDataset(Dataset):
         if len(dori["cseqs"]) > 0:
             # cseqs is 2D: [num_samples, seq_len, max_concepts]
             dori["cseqs"] = torch.tensor(dori["cseqs"], dtype=torch.long)
-            seq_for_mask = dori["cseqs"][:, :, 0]  # Use first concept for masking
+            seq_for_mask = (dori["cseqs"] >= 0).any(dim=-1)
         elif len(dori["qseqs"]) > 0:
             seq_for_mask = torch.tensor(dori["qseqs"], dtype=torch.long)
         else:
@@ -666,9 +737,11 @@ class KTQueDataset(Dataset):
         if "historycorrs" in dori:
             dori["historycorrs"] = torch.tensor(dori["historycorrs"], dtype=torch.float)
 
-        # masks based on first concept column
-        dori["masks"] = (seq_for_mask[:, :-1] != self.pad_val) & (
-            seq_for_mask[:, 1:] != self.pad_val
-        )
+        if seq_for_mask.dtype == torch.bool:
+            dori["masks"] = seq_for_mask[:, :-1] & seq_for_mask[:, 1:]
+        else:
+            dori["masks"] = (seq_for_mask[:, :-1] != self.pad_val) & (
+                seq_for_mask[:, 1:] != self.pad_val
+            )
         dori["smasks"] = dori["smasks"][:, 1:] != self.pad_val
         return dori

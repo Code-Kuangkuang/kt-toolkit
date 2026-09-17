@@ -3,6 +3,7 @@ import torch
 from torch.nn import Module, Embedding, LSTM, Linear, Dropout
 
 from core.registry import MODEL_REGISTRY
+from .multi_concept import pool_interaction_embeddings
 
 
 @MODEL_REGISTRY.register("dkt")
@@ -20,16 +21,18 @@ class DKT(Module):
         self.dropout_layer = Dropout(dropout)
         self.out_layer = Linear(self.hidden_size, self.num_c)
 
-    def forward(self, q, r):
-        q = q.long().clamp(min=0, max=self.num_c - 1)
+    def forward(self, q, r, return_features=False):
         # Test sequences can contain -1 (unknown future response); map to valid index range.
         r = r.long().clamp(min=0, max=1)
-        x = q + self.num_c * r
-        xemb = self.interaction_emb(x)
+        xemb = pool_interaction_embeddings(
+            self.interaction_emb, q, r, self.num_c
+        )
 
         h, _ = self.lstm_layer(xemb)
         h = self.dropout_layer(h)
         y = self.out_layer(h)
         y = torch.sigmoid(y)
 
+        if return_features:
+            return {"preds": y, "hidden": h}
         return y

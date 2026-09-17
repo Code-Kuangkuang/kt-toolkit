@@ -8,6 +8,7 @@ from torch.nn.init import xavier_uniform_
 import torch.nn.functional as F
 
 from core.registry import MODEL_REGISTRY
+from .multi_concept import pool_concept_embeddings
 
 
 class Dim(IntEnum):
@@ -170,7 +171,12 @@ class HQAFKT(nn.Module):
             q_data, pid_data, cd, qu, cutT, cpT
         )
 
-        q_embed_data = self.q_embed(pid_data) + self.c_embed(q_data)
+        # q_data holds concepts and pid_data holds question ids, so only the
+        # concept side is pooled.  Identity on [B,T]; on [B,T,K] mean-pools
+        # the question's KCs with -1 padding masked.
+        q_embed_data = self.q_embed(pid_data) + pool_concept_embeddings(
+            self.c_embed, q_data, self.n_question
+        )
         qa_embed_data = q_embed_data + self.qa_embed(target)
 
         utT_embeddings = self.utT_embedding(cutT)

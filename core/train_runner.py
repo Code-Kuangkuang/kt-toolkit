@@ -20,9 +20,9 @@ from core.run_support import (
     save_run_config,
     set_seed,
 )
+from datasets.init_dataset import protocol_stamp
 from datasets.lpkt_utils import generate_time2idx
 from datasets.feature_utils import (
-    compute_question_frequency_counts,
     compute_dkt_forget_stats,
     compute_dimkt_difficulty_maps,
     compute_hqaf_feature_maps,
@@ -34,17 +34,24 @@ from strategies import apply_dkt_pebg_strategy
 
 MODEL_NAME_ALIASES = {
     "dkt-forget": "dkt_forget",
+    "hd-kt": "hdkt",
+    "hd_lpkt": "hdkt",
+    "hd-lpkt": "hdkt",
+    "hd-dkt": "hd_dkt",
+    "hd-akt": "hd_akt",
+    "hd-simplekt": "hd_simplekt",
 
-    "gbkt_tc": "removed_model",
-    "gbkt-tc": "removed_model",
-    "gbkt-theory": "removed_model",
     "lefokt": "lefokt_akt",
     "hqaf-kt": "hqaf",
     "hqaf_kt": "hqaf",
 }
-QUESTION_REQUIRED_MODELS = {"atdkt", "dimkt", "stablekt", "sparsekt", "robustkt", "dtransformer", "rekt", "lefokt_akt", "hqaf", "keenkt", "dgekt", "removed_model", "removed_model", "removed_model", "removed_model"}
+QUESTION_REQUIRED_MODELS = {"atdkt", "dimkt", "stablekt", "sparsekt", "robustkt", "dtransformer", "rekt", "lefokt_akt", "hqaf", "keenkt", "dgekt", "lpkt", "hdkt"}
 ALL_IN_ONE_MODELS = {
     "lpkt",
+    "hdkt",
+    "hd_dkt",
+    "hd_akt",
+    "hd_simplekt",
     "atdkt",
     "dimkt",
     "stablekt",
@@ -57,13 +64,30 @@ ALL_IN_ONE_MODELS = {
     "lefokt_akt",
     "hqaf",
     "keenkt",
-    "removed_model",
-    "removed_model",
-    "removed_model",
-    "removed_model",
     "dgekt",
 }
 ONE_BY_ONE_MODELS = {"hawkes"}
+
+
+def _resolve_dataset_mode(model_name, train_cfg, model_cfg, overrides=None):
+    """Resolve data mode with CLI > model config > compatibility defaults."""
+    overrides = overrides or {}
+    if overrides.get("dataset_mode") is not None:
+        mode = overrides["dataset_mode"]
+    elif model_cfg.get("dataset_mode") is not None:
+        mode = model_cfg["dataset_mode"]
+    elif model_name in ALL_IN_ONE_MODELS:
+        mode = "all_in_one"
+    elif model_name in ONE_BY_ONE_MODELS:
+        mode = "one_by_one"
+    else:
+        mode = train_cfg.get("dataset_mode", "one_by_one")
+    if mode not in {"one_by_one", "all_in_one"}:
+        raise ValueError(
+            f"Unsupported dataset_mode={mode!r} for {model_name}; "
+            "expected 'one_by_one' or 'all_in_one'."
+        )
+    return mode
 
 
 def _resolve_existing_sequence_filename(dataset_cfg, primary_key, fallback_key):
@@ -76,34 +100,6 @@ def _resolve_existing_sequence_filename(dataset_cfg, primary_key, fallback_key):
         if os.path.exists(os.path.join(dataset_cfg["dpath"], filename)):
             return filename
     return primary_name or fallback_name
-
-
-def _build_removed_model_question_frequency(
-    model_name,
-    dataset_cfg,
-    dataset_mode,
-    fold_id,
-):
-    if model_name not in {"removed_model", "removed_model", "removed_model"}:
-        return None, None
-
-    train_file_key = (
-        "train_valid_file_quelevel"
-        if dataset_mode == "all_in_one"
-        else "train_valid_file"
-    )
-    train_file = _resolve_existing_sequence_filename(
-        dataset_cfg,
-        train_file_key,
-        "train_valid_file",
-    )
-    train_folds = sorted(set(dataset_cfg.get("folds", [])) - {int(fold_id)})
-    return compute_question_frequency_counts(
-        dataset_cfg["dpath"],
-        train_file,
-        folds=train_folds,
-        num_q=dataset_cfg["num_q"],
-    )
 
 
 def train_one_fold(
@@ -125,6 +121,8 @@ def train_one_fold(
     cv_run_name,
     overrides,
     gpu_id=0,
+    train_label_flip_ratio=0.0,
+    train_label_flip_seed=None,
 ):
     dataset_name = normalize_dataset_name(dataset_name)
     model_name = MODEL_NAME_ALIASES.get(model_name.lower(), model_name.lower())
@@ -137,6 +135,18 @@ def train_one_fold(
 
     apply_overrides(train_cfg_local, model_cfg_local, overrides)
 
+    train_label_flip_ratio = float(train_label_flip_ratio)
+    if not 0.0 <= train_label_flip_ratio <= 1.0:
+        raise ValueError(
+            "train_label_flip_ratio must be in [0, 1], "
+            f"got {train_label_flip_ratio}."
+        )
+    if train_label_flip_seed is None:
+        train_label_flip_seed = seed
+    train_label_flip_seed = int(train_label_flip_seed)
+    train_cfg_local["train_label_flip_ratio"] = train_label_flip_ratio
+    train_cfg_local["train_label_flip_seed"] = train_label_flip_seed
+
     if train_cfg_local.get("patience") == -1:
         train_cfg_local["patience"] = None
 
@@ -148,10 +158,15 @@ def train_one_fold(
             dpath = os.path.join(root_dir, dpath)
         dataset_cfg_local["dpath"] = os.path.normpath(dpath)
 
-    if model_name in ALL_IN_ONE_MODELS:
-        train_cfg_local["dataset_mode"] = "all_in_one"
-    elif model_name in ONE_BY_ONE_MODELS:
-        train_cfg_local["dataset_mode"] = "one_by_one"
+    resolved_dataset_mode = _resolve_dataset_mode(
+        model_name, train_cfg_local, model_cfg_local, overrides
+    )
+    train_cfg_local["dataset_mode"] = resolved_dataset_mode
+    # A per-model opt-out for the windowed test set, declared in the model's
+    # config block but consumed as a training-run setting.
+    if model_cfg_local.get("eval_window") is not None:
+        train_cfg_local["eval_window"] = bool(model_cfg_local["eval_window"])
+    model_cfg_local["dataset_mode"] = resolved_dataset_mode
 
     booster_info = None
     if model_name == "dkt_pebg":
@@ -170,13 +185,23 @@ def train_one_fold(
         )
 
     lpkt_time_idx_maps = None
-    if model_name == "lpkt":
-        at2idx, it2idx = generate_time2idx(dataset_cfg_local)
+    if model_name in {"lpkt", "hdkt"}:
+        train_time_folds = (
+            sorted(set(dataset_cfg_local.get("folds", [])) - {int(fold_id)})
+            if model_name == "hdkt" or resolved_dataset_mode == "all_in_one"
+            else None
+        )
+        at2idx, it2idx = generate_time2idx(
+            dataset_cfg_local, folds=train_time_folds
+        )
         lpkt_time_idx_maps = {"at2idx": at2idx, "it2idx": it2idx}
         dataset_cfg_local["num_at"] = len(at2idx) + 1
         dataset_cfg_local["num_it"] = len(it2idx) + 1
         model_cfg_local["num_at"] = dataset_cfg_local["num_at"]
         model_cfg_local["num_it"] = dataset_cfg_local["num_it"]
+        if model_name == "hdkt" or resolved_dataset_mode == "all_in_one":
+            dataset_cfg_local["time_index_scope"] = "train_folds_only"
+            dataset_cfg_local["time_index_folds"] = train_time_folds
     if model_name == "hawkes" and dataset_cfg_local.get("num_q", 0) <= 0:
         raise ValueError(
             f"Hawkes requires question ids, but dataset {dataset_name} has num_q={dataset_cfg_local.get('num_q')}."
@@ -252,15 +277,6 @@ def train_one_fold(
             "questions": hqaf_feature_maps.get("questions", {}),
         }
 
-    removed_model_question_counts, removed_model_frequency_info = (
-        _build_removed_model_question_frequency(
-            model_name=model_name,
-            dataset_cfg=dataset_cfg_local,
-            dataset_mode=train_cfg_local.get("dataset_mode"),
-            fold_id=fold_id,
-        )
-    )
-
     dgekt_graph_info = None
 
     # Filter out learning_rate and other_config parameters for model
@@ -268,12 +284,14 @@ def train_one_fold(
                           "output_mode", "output_c_all_lambda", "output_c_next_lambda", "output_q_all_lambda",
                           "output_q_next_lambda", "emb_type", "learning_rate", "use_timestamps", "dpath",
                            "num_at", "num_it", "booster_strategy", "require_fold_embedding",
-                           "lambda_item_difficulty", "lambda_rel", "lambda_kl",
+                           "lambda_item_difficulty", "lambda_item_l2", "lambda_rel", "lambda_kl",
                            "lambda_prior", "kl_warmup_epochs", "clean_prior",
-                           "lambda_move", "lambda_item"}
+                           "lambda_move", "lambda_item", "dataset_mode",
+                           # Routed to the dataset builder, not the model.
+                           "concept_mode", "eval_window"}
     model_kwargs = {k: v for k, v in model_cfg_local.items() if k not in other_config_keys}
-    if removed_model_question_counts is not None:
-        model_kwargs["question_counts"] = removed_model_question_counts
+    if model_name == "lpkt":
+        model_kwargs["use_runtime_concepts"] = resolved_dataset_mode == "all_in_one"
     if model_name in {"simplekt", "ukt", "stablekt", "sparsekt", "robustkt", "dtransformer", "lefokt_akt", "hqaf"}:
         model_kwargs.setdefault("num_pid", dataset_cfg_local.get("num_q", 0))
     if model_name == "hqaf":
@@ -379,6 +397,10 @@ def train_one_fold(
         "include_history": model_name == "atdkt" and "his" in resolved_emb_type,
         "include_hqaf_attrs": model_name == "hqaf",
         "hqaf_feature_maps": hqaf_feature_maps,
+        # Optional `concept_mode` in the model's config block forces multi/first
+        # instead of taking it from MULTI_CONCEPT_MODELS, so the cost of
+        # truncation can be measured without editing code.
+        "concept_mode": model_cfg_local.get("concept_mode"),
     }
 
     train_loader, valid_loader = build_dataset(
@@ -391,20 +413,31 @@ def train_one_fold(
         dataset_mode=dataset_mode,
         use_timestamps=use_timestamps,
         time_idx_maps=lpkt_time_idx_maps,
+        train_label_flip_ratio=train_label_flip_ratio,
+        train_label_flip_seed=train_label_flip_seed,
         **dataset_feature_kwargs,
     )
+    train_label_flip_info = train_loader.dataset.label_flip_info
 
     # Build test dataloader if data exists. AAAI2023's official test file has
     # hidden targets marked as -1, so it is for prediction/submission only.
     test_loader = None
     has_hidden_test_labels = is_hidden_label_dataset(dataset_name)
-    test_path = os.path.join(dataset_cfg_local["dpath"], dataset_cfg_local.get("test_file_quelevel", dataset_cfg_local.get("test_file", "")))
+    test_file_key = (
+        "test_file_quelevel" if dataset_mode == "all_in_one" else "test_file"
+    )
+    test_filename = _resolve_existing_sequence_filename(
+        dataset_cfg_local,
+        test_file_key,
+        "test_file",
+    )
+    test_path = os.path.join(dataset_cfg_local["dpath"], test_filename or "")
     if has_hidden_test_labels:
         print(
             "AAAI2023 test evaluation disabled: pykt_test.csv contains hidden "
             "targets marked as -1. Use scripts/predict_aaai2023.py to generate prediction.csv."
         )
-    elif os.path.exists(dataset_cfg_local["dpath"]) and dataset_cfg_local.get("test_file"):
+    elif test_filename and os.path.exists(test_path):
         try:
             test_loader = build_dataset(
                 "kt_test",
@@ -422,10 +455,54 @@ def train_one_fold(
             print(f"Warning: Could not build test loader: {e}")
             test_loader = None
 
+    # The windowed test file is what pykt reports on: one row per position, each
+    # with a full-length history, instead of non-overlapping chunks that leave
+    # boundary positions with almost none.  It is ~20x larger, so it is scored
+    # once at the end rather than during training.
+    window_test_loader = None
+    # Models whose forward runs a per-timestep Python loop (SKVMN's hop-LSTM is
+    # the worst) take hours on the windowed file, which has ~20x the rows.  They
+    # can opt out with `eval_window: false` in their config block; the choice is
+    # recorded in the protocol stamp so a table cannot silently mix rows that
+    # have a windowed number with rows that do not.
+    eval_window = bool(train_cfg_local.get("eval_window", True))
+    window_file_key = (
+        "test_window_file_quelevel" if dataset_mode == "all_in_one" else "test_window_file"
+    )
+    window_filename = _resolve_existing_sequence_filename(
+        dataset_cfg_local,
+        window_file_key,
+        "test_window_file",
+    )
+    window_path = os.path.join(dataset_cfg_local["dpath"], window_filename or "")
+    if not eval_window:
+        print("Windowed test evaluation disabled for this model (eval_window=false).")
+    elif test_loader is not None and window_filename and os.path.exists(window_path):
+        try:
+            window_test_loader = build_dataset(
+                "kt_test",
+                dataset_name=dataset_name,
+                data_config=data_config,
+                batch_size=train_cfg_local["batch_size"],
+                model_name=model_name,
+                dataset_mode=dataset_mode,
+                use_timestamps=use_timestamps,
+                time_idx_maps=lpkt_time_idx_maps,
+                window=True,
+                **dataset_feature_kwargs,
+            )
+            print(f"Windowed test loader built from: {window_path}")
+        except Exception as e:
+            print(f"Warning: Could not build windowed test loader: {e}")
+            window_test_loader = None
+
     opt = build_optimizer(train_cfg_local, model_cfg_local, model)
 
     ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     run_name = f"{dataset_name}-{model_name}-fold{fold_id}-{ts}"
+    if train_label_flip_ratio > 0:
+        ratio_tag = f"{train_label_flip_ratio:g}".replace(".", "p")
+        run_name = f"{run_name}-flip{ratio_tag}"
     if add_uuid == 1:
         run_name = f"{run_name}-{uuid.uuid4()}"
     ckpt_dir = os.path.join(save_root, run_name)
@@ -441,6 +518,15 @@ def train_one_fold(
         "emb_type": resolved_emb_type,
         "fold": fold_id,
         "seed": seed,
+        "train_label_flip": train_label_flip_info,
+        # Two runs are comparable only when this block matches.
+        "protocol": protocol_stamp(
+            model_name,
+            train_cfg_local.get("dataset_mode"),
+            dataset_cfg_local.get("max_concepts"),
+            model_cfg_local.get("concept_mode"),
+            eval_window=bool(train_cfg_local.get("eval_window", True)),
+        ),
         "use_wandb": bool(wandb_cfg),
         "add_uuid": bool(add_uuid),
         "cv": {
@@ -455,15 +541,6 @@ def train_one_fold(
         "train_config": train_cfg_local,
         "model_config": model_cfg_local,
         "dataset_config": dataset_cfg_local,
-        "removed_model_question_frequency": (
-            removed_model_frequency_info if model_name == "removed_model" else None
-        ),
-        "removed_model_question_frequency": (
-            removed_model_frequency_info if model_name == "removed_model" else None
-        ),
-        "removed_model_question_frequency": (
-            removed_model_frequency_info if model_name == "removed_model" else None
-        ),
         "dgekt_graph": dgekt_graph_info,
         "booster_info": booster_info,
         "wandb": {
@@ -503,6 +580,9 @@ def train_one_fold(
         trainer_kwargs["patience"] = train_cfg_local["patience"]
 
     trainer = build_trainer(model_name, **trainer_kwargs)
+    # Attached rather than passed through __init__: every trainer subclass
+    # declares its own constructor, so a new keyword would break all of them.
+    trainer.window_test_loader = window_test_loader
     trainer.run()
 
     best_path = getattr(trainer, "best_path", None)
@@ -514,6 +594,7 @@ def train_one_fold(
 
 
     best_test_metrics = None
+    best_window_metrics = None
     if best_path and os.path.exists(best_path):
         trainer.model.load_state_dict(torch.load(best_path, weights_only=True))
         if test_loader is not None:
@@ -521,6 +602,15 @@ def train_one_fold(
             best_test_metrics = trainer.evaluate_test()
             if best_test_metrics:
                 print(f"[Best-Valid Epoch] Test AUC={best_test_metrics.get('test_auc', -1):.4f}, ACC={best_test_metrics.get('test_acc', -1):.4f}")
+            if window_test_loader is not None:
+                best_window_metrics = trainer.evaluate_window_test()
+                if best_window_metrics:
+                    print(
+                        f"[Best-Valid Epoch] Window Test AUC="
+                        f"{best_window_metrics.get('window_test_auc', -1):.4f}, "
+                        f"ACC={best_window_metrics.get('window_test_acc', -1):.4f}"
+                        "   (pykt-comparable protocol)"
+                    )
         else:
             print(f"Loaded best model from epoch {trainer.best_metrics.get('epoch', '?')}")
 
@@ -539,6 +629,9 @@ def train_one_fold(
         if best_test_metrics:
             best_metrics["best_test_auc"] = best_test_metrics.get("test_auc", -1)
             best_metrics["best_test_acc"] = best_test_metrics.get("test_acc", -1)
+        if best_window_metrics:
+            best_metrics["best_window_test_auc"] = best_window_metrics.get("window_test_auc", -1)
+            best_metrics["best_window_test_acc"] = best_window_metrics.get("window_test_acc", -1)
         if last_test_metrics:
             best_metrics["last_test_auc"] = last_test_metrics.get("test_auc", -1)
             best_metrics["last_test_acc"] = last_test_metrics.get("test_acc", -1)
@@ -549,6 +642,7 @@ def train_one_fold(
         "run_name": run_name,
         "ckpt_dir": ckpt_dir,
         "emb_type": resolved_emb_type,
+        "train_label_flip": train_label_flip_info,
         "best_metrics": best_metrics,
         "best_path": getattr(trainer, "best_path", None),
     }

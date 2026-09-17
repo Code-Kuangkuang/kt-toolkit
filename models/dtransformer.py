@@ -5,6 +5,7 @@ import math
 import torch.nn.functional as F
 
 from core.registry import MODEL_REGISTRY
+from .multi_concept import pool_concept_embeddings, pool_interaction_embeddings
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -137,10 +138,13 @@ class DTransformer(nn.Module):
         return z, q_scores, k_scores
 
     def base_emb(self, q_data, target):
-        q_embed_data = self.q_embed(q_data)  # BS, seqlen,  d_model# c_ct
+        # Identity on [B,T]; on [B,T,K] mean-pools the question's KCs with -1
+        # padding masked, as AKT and pykt's QueEmb.get_avg_skill_emb do.
+        q_embed_data = pool_concept_embeddings(self.q_embed, q_data, self.n_question)
         if self.separate_qa:
-            qa_data = q_data + self.n_question * target
-            qa_embed_data = self.s_embed(qa_data)
+            qa_embed_data = pool_interaction_embeddings(
+                self.s_embed, q_data, target, self.n_question
+            )
         else:
             # BS, seqlen, d_model # c_ct+ g_rt =e_(ct,rt)
             qa_embed_data = self.s_embed(target)+q_embed_data
@@ -153,7 +157,7 @@ class DTransformer(nn.Module):
 
         pid_embed_data = None
         if self.n_pid > 0: # have problem id
-            q_embed_diff_data = self.q_diff_embed(q_data)  # d_ct 总结了包含当前question（concept）的problems（questions）的变化
+            q_embed_diff_data = pool_concept_embeddings(self.q_diff_embed, q_data, self.n_question)  # d_ct 总结了包含当前question（concept）的problems（questions）的变化
             pid_embed_data = self.p_diff_embed(pid_data)  # uq 当前problem的难度
             q_embed_data = q_embed_data + pid_embed_data * \
                 q_embed_diff_data  # uq *d_ct + c_ct # question encoder

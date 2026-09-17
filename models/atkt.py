@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from core.registry import MODEL_REGISTRY
+from .multi_concept import pool_concept_embeddings
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -113,8 +114,11 @@ class ATKT(nn.Module):
         """
         r = answer.long()
 
-        # Get embeddings
-        skill_embedding = self.skill_emb(skill)
+        # Get embeddings.  pool_concept_embeddings is the identity on [B,T];
+        # on [B,T,K] it mean-pools the question's KCs with -1 padding masked,
+        # as pykt's QueEmb.get_avg_skill_emb does.  The answer embedding is
+        # indexed by the response, not by a concept, so it is left alone.
+        skill_embedding = pool_concept_embeddings(self.skill_emb, skill, self.num_c)
         answer_embedding = self.answer_emb(answer)
 
         # Concatenate skill and answer embeddings in two ways

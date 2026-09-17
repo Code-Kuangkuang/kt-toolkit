@@ -4,6 +4,7 @@ from torch.nn import Module, Parameter, Embedding, Linear, Dropout
 from torch.nn.init import kaiming_normal_
 
 from core.registry import MODEL_REGISTRY
+from .multi_concept import pool_concept_embeddings, pool_interaction_embeddings
 
 
 @MODEL_REGISTRY.register("deep_irt")
@@ -81,9 +82,10 @@ class DeepIRT(Module):
         seq_len = q.shape[1]
 
         if q_emb_type == "qid":
-            x = q + self.num_c * r
-            k = self.k_emb_layer(q)
-            v = self.v_emb_layer(x)
+            # Identity on [B,T]; on [B,T,K] mean-pools the question's KCs with
+            # -1 padding masked, as pykt's QueEmb.get_avg_skill_emb does.
+            k = pool_concept_embeddings(self.k_emb_layer, q, self.num_c)
+            v = pool_interaction_embeddings(self.v_emb_layer, q, r, self.num_c)
 
         Mvt = self.Mv0.unsqueeze(0).repeat(batch_size, 1, 1)
         Mv = [Mvt]

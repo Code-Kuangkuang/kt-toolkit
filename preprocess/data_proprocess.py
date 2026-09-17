@@ -1,6 +1,11 @@
 import os
 
-def process_raw_data(dataset_name,dname2paths):
+# ASSISTments releases log scaffolding sub-problems that only appear after a
+# wrong answer. These preprocessors filter them out by default and accept
+# keep_scaffolding to reproduce the unfiltered protocol used by older papers.
+SCAFFOLDING_DATASETS = {"assist2009", "assist2012", "assist2017"}
+
+def process_raw_data(dataset_name, dname2paths, keep_scaffolding=False):
     readf = dname2paths[dataset_name]
     dname = "/".join(readf.split("/")[0:-1])
     writef = os.path.join(dname, "data.txt")
@@ -41,6 +46,8 @@ def process_raw_data(dataset_name,dname2paths):
         read_data_from_csv(readf, writef, dq2c)
     elif dataset_name in ["ednet5w","ednet"]:
         dname, writef = read_data_from_csv(readf, writef, dataset_name=dataset_name)
+    elif dataset_name in SCAFFOLDING_DATASETS:
+        read_data_from_csv(readf, writef, keep_scaffolding=keep_scaffolding)
     elif dataset_name != "nips_task34":#default case
         read_data_from_csv(readf, writef)
     else:

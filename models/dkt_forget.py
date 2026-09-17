@@ -2,6 +2,7 @@ import torch
 from torch.nn import Module, Embedding, LSTM, Linear, Dropout
 
 from core.registry import MODEL_REGISTRY
+from .multi_concept import pool_concept_embeddings, pool_interaction_embeddings
 
 device = "cpu" if not torch.cuda.is_available() else "cuda"
 
@@ -30,8 +31,12 @@ class DKTForget(Module):
     def forward(self, q, r, dgaps):
         emb_type = self.emb_type
         if emb_type == "qid":
-            x = q + self.num_c * r
-            xemb = self.interaction_emb(x)
+            # Identity on [B,T]; on [B,T,K] mean-pools the question's KCs
+            # with -1 padding masked, as DKT and pykt's
+            # QueEmb.get_avg_skill_emb do.
+            xemb = pool_interaction_embeddings(
+                self.interaction_emb, q, r, self.num_c
+            )
             theta_in = self.c_integration(xemb, dgaps["rgaps"].long(), dgaps["sgaps"].long(), dgaps["pcounts"].long())
 
         h, _ = self.lstm_layer(theta_in)

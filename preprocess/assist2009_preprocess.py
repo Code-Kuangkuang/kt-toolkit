@@ -5,7 +5,7 @@ from .utils import sta_infos, write_txt, format_list2str
 
 KEYS = ["user_id", "skill_id", "problem_id"]
 
-def read_data_from_csv(read_file, write_file):
+def read_data_from_csv(read_file, write_file, keep_scaffolding=False):
     stares = []
 
     df = pd.read_csv(read_file, encoding = 'utf-8', dtype=str)
@@ -15,6 +15,11 @@ def read_data_from_csv(read_file, write_file):
     
     df['tmp_index'] = range(len(df))
     _df = df.dropna(subset=["user_id","problem_id", "skill_id", "correct", "order_id"])
+    # Scaffolding sub-problems (original == 0) are only generated after a wrong
+    # answer on the main problem, so keeping them leaks the previous label and
+    # mixes two response populations. Main problems only, per Xiong et al. 2016.
+    if not keep_scaffolding:
+        _df = _df[_df["original"] == "1"]
 
     ins, us, qs, cs, avgins, avgcq, na = sta_infos(_df, KEYS, stares)
     print(f"after drop interaction num: {ins}, user num: {us}, question num: {qs}, concept num: {cs}, avg(ins) per s: {avgins}, avg(c) per q: {avgcq}, na: {na}")

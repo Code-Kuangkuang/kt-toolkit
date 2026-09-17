@@ -110,9 +110,12 @@ class QueEmb(nn.Module):
         related_concepts = (c + 1).long()
         concept_emb = concept_emb_cat[related_concepts, :]
 
-        # Keep shape for single-concept ids ([B] or [B, T]); only average when
-        # the last axis explicitly stores multiple concepts per interaction.
-        if related_concepts.dim() <= 2:
+        # IEKT always calls this one timestep at a time, so the input is [B] for
+        # a single concept and [B, K] when the question carries several.  The
+        # guard used to be `dim() <= 2`, which silently took the single-concept
+        # branch for [B, K] and returned [B, K, D] where the caller expects
+        # [B, D] -- a shape error further down rather than a wrong number.
+        if related_concepts.dim() <= 1:
             return concept_emb
 
         concept_emb_sum = concept_emb.sum(dim=-2)

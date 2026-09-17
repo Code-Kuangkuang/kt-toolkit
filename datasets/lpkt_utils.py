@@ -10,15 +10,23 @@ def _read_csv_if_exists(path):
     return pd.read_csv(path, dtype=str, keep_default_na=False)
 
 
-def generate_time2idx(data_config):
+def generate_time2idx(data_config, folds=None):
     dpath = data_config["dpath"]
     train_name = data_config.get("train_valid_original_file", "train_valid.csv")
     test_name = data_config.get("test_original_file", "test.csv")
 
     frames = []
-    for name in (train_name, test_name):
+    # HDKT passes the current training folds so categorical time vocabularies
+    # are fitted without validation/test interactions.  The optional argument
+    # preserves the historical LPKT behavior for existing callers.
+    names = (train_name,) if folds is not None else (train_name, test_name)
+    fold_set = None if folds is None else {int(fold) for fold in folds}
+    for name in names:
         df = _read_csv_if_exists(os.path.join(dpath, name))
         if df is not None:
+            if fold_set is not None and "fold" in df.columns:
+                fold_values = pd.to_numeric(df["fold"], errors="raise").astype(int)
+                df = df.loc[fold_values.isin(fold_set)]
             frames.append(df)
     if not frames:
         raise FileNotFoundError(

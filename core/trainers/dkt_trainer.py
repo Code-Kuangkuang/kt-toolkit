@@ -4,6 +4,7 @@ from torch.nn.functional import binary_cross_entropy
 
 from core.registry import TRAINER_REGISTRY
 from core.trainer import BaseTrainer
+from models.multi_concept import pool_concept_predictions
 
 
 @TRAINER_REGISTRY.register("dkt")
@@ -88,14 +89,11 @@ class DKTTrainer(BaseTrainer):
 
         y = self.model(base_seqs, rseqs)
 
-        max_target = int(target_idx.max().item()) if target_idx.numel() > 0 else -1
-        if max_target >= y.size(-1):
-            raise ValueError(
-                f"DKT target id {max_target} exceeds output dim {y.size(-1)}. "
-                "Please provide compatible shft_cseqs/shft_qseqs for current model output."
-            )
-
-        y = y.gather(-1, target_idx.unsqueeze(-1)).squeeze(-1)
+        y, target_has_concept = pool_concept_predictions(
+            y, target_idx, y.size(-1)
+        )
+        if torch.any(sm.bool() & ~target_has_concept):
+            raise ValueError("DKT found a scored question without a valid concept id.")
 
         loss = cal_loss(self.model, [y], rseqs, rshft, sm)
 

@@ -99,6 +99,7 @@ class LPKT(nn.Module):
         emb_type="qid",
         use_time=True,
         dpath="",
+        use_runtime_concepts=False,
         **kwargs,
     ):
         super().__init__()
@@ -107,14 +108,24 @@ class LPKT(nn.Module):
         self.d_a = d_a
         self.d_e = d_e
         self.n_question = num_q
+        self.num_c = int(num_c)
+        self.gamma = float(gamma)
+        self.use_runtime_concepts = bool(use_runtime_concepts)
 
         # Q-matrix: load from file or generate
         if q_matrix is not None:
-            self.q_matrix = torch.tensor(q_matrix, dtype=torch.float) if not torch.is_tensor(q_matrix) else q_matrix.float()
+            matrix = torch.tensor(q_matrix, dtype=torch.float) if not torch.is_tensor(q_matrix) else q_matrix.float()
+        elif self.use_runtime_concepts:
+            # all_in_one supplies the complete KC set per question at runtime,
+            # so no validation/test-derived Q-matrix is needed.
+            matrix = torch.zeros(num_q + 1, num_c + 1, dtype=torch.float)
         else:
-            from .lpkt import generate_qmatrix
-            self.q_matrix = torch.tensor(generate_qmatrix(dpath, num_q, num_c, gamma=0.0), dtype=torch.float)
-        self.q_matrix[self.q_matrix == 0] = gamma
+            matrix = torch.tensor(
+                generate_qmatrix(dpath, num_q, num_c, gamma=0.0),
+                dtype=torch.float,
+            )
+        matrix[matrix == 0] = gamma
+        self.register_buffer("q_matrix", matrix)
 
         self.emb_type = emb_type
         self.use_time = use_time
@@ -139,9 +150,15 @@ class LPKT(nn.Module):
         self.tanh = nn.Tanh()
         self.sig = nn.Sigmoid()
         self.dropout = nn.Dropout(dropout)
+        if self.use_runtime_concepts:
+            self.initial_knowledge = nn.Parameter(torch.empty(num_c + 1, d_k))
+        else:
+            self.register_parameter("initial_knowledge", None)
 
         # Initialize weights
         self._init_weights()
+        if self.initial_knowledge is not None:
+            nn.init.xavier_uniform_(self.initial_knowledge)
 
     def _init_weights(self):
         for m in [self.at_embed, self.it_embed, self.e_embed,
@@ -152,7 +169,44 @@ class LPKT(nn.Module):
             elif isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight)
 
-    def forward(self, e_data, a_data, it_data=None, at_data=None, qtest=False):
+    def _runtime_concept_weights(self, concept_data, valid_mask=None):
+        if concept_data is None:
+            raise ValueError(
+                "LPKT all_in_one mode requires runtime concept sequences."
+            )
+        if concept_data.dim() == 2:
+            concept_data = concept_data.unsqueeze(-1)
+        if concept_data.dim() != 3:
+            raise ValueError("LPKT concepts must have shape [B,T] or [B,T,K].")
+        concept_slots = (concept_data >= 0) & (concept_data < self.num_c)
+        if torch.any(concept_data >= self.num_c):
+            raise ValueError("LPKT encountered an out-of-range concept id.")
+        safe = concept_data.clamp(min=0, max=self.num_c - 1)
+        weights = torch.full(
+            (*concept_data.shape[:2], self.num_c + 1),
+            self.gamma,
+            dtype=self.q_matrix.dtype,
+            device=concept_data.device,
+        )
+        one_hot = torch.nn.functional.one_hot(
+            safe, num_classes=self.num_c + 1
+        ).to(weights.dtype)
+        present = (one_hot * concept_slots.unsqueeze(-1)).amax(dim=2)
+        weights = torch.where(present.bool(), torch.ones_like(weights), weights)
+        if valid_mask is not None:
+            weights = weights * valid_mask.unsqueeze(-1).to(weights.dtype)
+        return weights
+
+    def forward(
+        self,
+        e_data,
+        a_data,
+        it_data=None,
+        at_data=None,
+        concept_data=None,
+        valid_mask=None,
+        qtest=False,
+    ):
         """Forward pass.
 
         Args:
@@ -185,13 +239,24 @@ class LPKT(nn.Module):
         a_data = a_data.view(-1, 1).repeat(1, self.d_a).view(batch_size, -1, self.d_a)
         a_data = a_data.to(e_embed_data.dtype)
 
-        q_matrix = self.q_matrix.to(e_data.device)
+        q_matrix = self.q_matrix
         n_skills = q_matrix.size(1)
+        runtime_weights = None
+        if self.use_runtime_concepts:
+            runtime_weights = self._runtime_concept_weights(
+                concept_data, valid_mask=valid_mask
+            )
 
         # Initialize knowledge state
-        h_pre = nn.init.xavier_uniform_(
-            torch.zeros(n_skills, self.d_k)
-        ).repeat(batch_size, 1, 1).to(e_data.device)
+        if self.initial_knowledge is None:
+            # Historical pyKT-compatible one_by_one behavior.
+            h_pre = nn.init.xavier_uniform_(
+                torch.zeros(n_skills, self.d_k, device=e_data.device)
+            ).repeat(batch_size, 1, 1)
+        else:
+            h_pre = self.initial_knowledge.unsqueeze(0).expand(
+                batch_size, -1, -1
+            )
         h_tilde_pre = None
 
         # Learning computation
@@ -211,7 +276,11 @@ class LPKT(nn.Module):
 
         for t in range(0, seq_len - 1):
             e = e_data[:, t]
-            q_e = q_matrix[e].view(batch_size, 1, -1)
+            q_e = (
+                runtime_weights[:, t].unsqueeze(1)
+                if runtime_weights is not None
+                else q_matrix[e].view(batch_size, 1, -1)
+            )
 
             if self.use_time:
                 it = it_embed_data[:, t]
@@ -265,11 +334,16 @@ class LPKT(nn.Module):
 
             # Predicting Module
             e_next = e_data[:, t + 1]
+            next_weights = (
+                runtime_weights[:, t + 1].unsqueeze(1)
+                if runtime_weights is not None
+                else q_matrix[e_next].view(batch_size, 1, -1)
+            )
             c_tilde = torch.unsqueeze(
-                torch.sum(torch.squeeze(q_matrix[e_next].view(batch_size, 1, -1), dim=1), 1),
+                torch.sum(torch.squeeze(next_weights, dim=1), 1),
                 -1
             )
-            h_tilde = q_matrix[e_next].view(batch_size, 1, -1).bmm(h).view(batch_size, self.d_k) / c_tilde
+            h_tilde = next_weights.bmm(h).view(batch_size, self.d_k) / c_tilde.clamp_min(1e-12)
 
             y = self.sig(self.linear_5(torch.cat((e_embed_data[:, t + 1], h_tilde), 1))).sum(1) / self.d_k
             pred[:, t + 1] = y

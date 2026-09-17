@@ -4,6 +4,7 @@ from torch.nn.functional import binary_cross_entropy
 
 from core.registry import TRAINER_REGISTRY
 from core.trainer import BaseTrainer
+from models.multi_concept import concept_validity
 
 
 @TRAINER_REGISTRY.register("sakt")
@@ -69,6 +70,9 @@ class SAKTTrainer(BaseTrainer):
 
         base_seqs = base_seqs.to(self.device).long()
         base_shft = base_shft.to(self.device).long()
+        _, target_has_concept = concept_validity(base_shft, self.model.num_c)
+        if torch.any(sm.bool() & ~target_has_concept):
+            raise ValueError("SAKT found a scored question without a valid concept id.")
 
         preds = self.model(base_seqs, rseqs, base_shft)
 

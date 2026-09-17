@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import math
 import numpy as np
 from core.registry import MODEL_REGISTRY
+from .multi_concept import pool_concept_embeddings, pool_interaction_embeddings
 
 
 class Dim:
@@ -101,10 +102,13 @@ class SimpleKT(nn.Module):
                 torch.nn.init.constant_(p, 0.0)
 
     def base_emb(self, q_data, target):
-        q_embed_data = self.q_embed(q_data)
+        q_embed_data = pool_concept_embeddings(
+            self.q_embed, q_data, self.num_c
+        )
         if self.separate_qa:
-            qa_data = q_data + self.num_c * target
-            qa_embed_data = self.qa_embed(qa_data)
+            qa_embed_data = pool_interaction_embeddings(
+                self.qa_embed, q_data, target, self.num_c
+            )
         else:
             qa_embed_data = self.qa_embed(target) + q_embed_data
         return q_embed_data, qa_embed_data
@@ -119,6 +123,7 @@ class SimpleKT(nn.Module):
         rshft,
         pidseqs=None,
         pidshft=None,
+        return_features=False,
         **kwargs,
     ):
         q = qseqs.long() if qseqs is not None else None
@@ -155,11 +160,15 @@ class SimpleKT(nn.Module):
                 )
             pid_data = torch.cat((pid[:, 0:1], next_pid), dim=1)
             if self.emb_type.find("aktrasch") == -1:
-                q_embed_diff_data = self.q_embed_diff(q_data)
+                q_embed_diff_data = pool_concept_embeddings(
+                    self.q_embed_diff, q_data, self.num_c
+                )
                 pid_embed_data = self.difficult_param(pid_data)
                 q_embed_data = q_embed_data + pid_embed_data * q_embed_diff_data
             else:
-                q_embed_diff_data = self.q_embed_diff(q_data)
+                q_embed_diff_data = pool_concept_embeddings(
+                    self.q_embed_diff, q_data, self.num_c
+                )
                 pid_embed_data = self.difficult_param(pid_data)
                 q_embed_data = q_embed_data + pid_embed_data * q_embed_diff_data
 
@@ -175,6 +184,13 @@ class SimpleKT(nn.Module):
         output = self.out(concat_q).squeeze(-1)
 
         preds = torch.sigmoid(output)
+        if return_features:
+            return {
+                "preds": preds,
+                "logits": output,
+                "hidden": d_output,
+                "question_embed": q_embed_data,
+            }
         return preds
 
 

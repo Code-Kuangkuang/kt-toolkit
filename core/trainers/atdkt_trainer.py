@@ -4,6 +4,7 @@ from torch.nn.functional import binary_cross_entropy
 
 from core.registry import TRAINER_REGISTRY
 from core.trainer import BaseTrainer
+from models.multi_concept import pool_concept_predictions
 
 
 @TRAINER_REGISTRY.register("atdkt")
@@ -63,7 +64,16 @@ class ATDKTTrainer(BaseTrainer):
 
         if y_full.dim() == 3:
             cshft = dcur["shft_cseqs"].long()
-            y = y_full.gather(-1, cshft.unsqueeze(-1)).squeeze(-1)
+            # A plain gather breaks on [B,T,K] concepts; pooling the per-KC
+            # predictions averages over the question's KCs, as pykt does in
+            # qikt.py.  Identity for the single-concept [B,T] case.
+            y, target_has_concept = pool_concept_predictions(
+                y_full, cshft, y_full.size(-1)
+            )
+            if torch.any(sm.bool() & ~target_has_concept):
+                raise ValueError(
+                    "AT-DKT found a scored question without a valid concept id."
+                )
         else:
             y = _align_shifted_preds(y_full, rshft)
 

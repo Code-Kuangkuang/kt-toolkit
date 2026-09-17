@@ -6,12 +6,13 @@ from .utils import sta_infos, write_txt,format_list2str,change2timestamp
 
 KEYS = ["user_id", "skill_id", "problem_id"]
 
-def read_data_from_csv(read_file, write_file):
+def read_data_from_csv(read_file, write_file, keep_scaffolding=False):
     stares = []
 
     # load data
     df = pd.read_csv(read_file, low_memory=False, usecols=[
-                 "user_id", "skill_id", "start_time", "problem_id", "correct","ms_first_response"])
+                 "user_id", "skill_id", "start_time", "problem_id", "correct","ms_first_response",
+                 "original"])
     df['correct'] = df['correct'].apply(int)
  
     ins, us, qs, cs, avgins, avgcq, na = sta_infos(df, KEYS, stares)
@@ -20,6 +21,11 @@ def read_data_from_csv(read_file, write_file):
     df['tmp_index'] = range(len(df))
     df = df.dropna(subset=["user_id", "skill_id", "start_time","problem_id", "correct","ms_first_response"])
     df = df[df['correct'].isin([0,1])]#filter responses
+    # Scaffolding sub-problems (original == 0) only appear after a wrong answer
+    # on the main problem, so they leak the previous label. Main problems only,
+    # per Xiong et al. 2016.
+    if not keep_scaffolding:
+        df = df[df['original'] == 1]
 
     # add timestamp and duration
     df['start_timestamp'] = df['start_time'].apply(lambda x:change2timestamp(x,hasf='.' in x))

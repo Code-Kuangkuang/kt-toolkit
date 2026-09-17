@@ -5,6 +5,7 @@ from torch.nn import Module, Embedding, LSTM, Linear, Dropout, LayerNorm, Transf
 from .utils import ut_mask
 
 from core.registry import MODEL_REGISTRY
+from .multi_concept import pool_concept_embeddings, pool_interaction_embeddings
 
 device = "cpu" if not torch.cuda.is_available() else "cuda"
 
@@ -77,7 +78,7 @@ class ATDKT(Module):
         y2, y3 = 0, 0
         if emb_type.find("delxemb") != -1:
             qemb = self.question_emb(q)
-            cemb = self.concept_emb(c)
+            cemb = pool_concept_embeddings(self.concept_emb, c, self.num_c)
             catemb = qemb + cemb
         else:
             catemb = xemb
@@ -86,7 +87,7 @@ class ATDKT(Module):
                 catemb = qemb + xemb
                 
             if emb_type.find("cemb") != -1:
-                cemb = self.concept_emb(c)
+                cemb = pool_concept_embeddings(self.concept_emb, c, self.num_c)
                 catemb += cemb
 
         # cemb = self.concept_emb(c)
@@ -134,8 +135,12 @@ class ATDKT(Module):
 
         emb_type = self.emb_type
         if emb_type.startswith("qid"):
-            x = c + self.num_c * r
-            xemb = self.interaction_emb(x)
+            # Identity on [B,T]; on [B,T,K] mean-pools the question's KCs
+            # with -1 padding masked, as DKT and pykt's
+            # QueEmb.get_avg_skill_emb do.
+            xemb = pool_interaction_embeddings(
+                self.interaction_emb, c, r, self.num_c
+            )
         rpreds, qh = None, None
         if emb_type == "qid":
             h, _ = self.lstm_layer(xemb)
@@ -144,7 +149,7 @@ class ATDKT(Module):
         elif emb_type.endswith("predhis"): # only predict history correct ratios
             # predict response
             if self.emb_type.find("cemb") != -1:
-                cemb = self.concept_emb(c)
+                cemb = pool_concept_embeddings(self.concept_emb, c, self.num_c)
                 xemb = xemb + cemb
             if emb_type.find("qemb") != -1:
                 qemb = self.question_emb(q)

@@ -4,6 +4,7 @@ from torch.nn.functional import binary_cross_entropy
 
 from core.registry import TRAINER_REGISTRY
 from core.trainer import BaseTrainer
+from models.multi_concept import pool_concept_predictions
 
 
 @TRAINER_REGISTRY.register("dkt_forget")
@@ -71,7 +72,16 @@ class DKTForgetTrainer(BaseTrainer):
         }
 
         y_full = self.model(qseqs, rseqs, dgaps)
-        y = y_full.gather(-1, qshft.unsqueeze(-1)).squeeze(-1)
+        # A plain gather breaks on [B,T,K] concepts; pooling the per-KC
+        # predictions averages over the question's KCs, as pykt does in
+        # qikt.py.  Identity for the single-concept [B,T] case.
+        y, target_has_concept = pool_concept_predictions(
+            y_full, qshft, y_full.size(-1)
+        )
+        if torch.any(sm.bool() & ~target_has_concept):
+            raise ValueError(
+                "DKT-forget found a scored question without a valid concept id."
+            )
         loss = _masked_bce(y, rshft, sm)
         pred = torch.masked_select(y, sm)
         target = torch.masked_select(rshft, sm)

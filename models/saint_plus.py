@@ -6,6 +6,7 @@ import pandas as pd
 from torch.nn import Sequential, ReLU
 
 from core.registry import MODEL_REGISTRY
+from .multi_concept import pool_concept_embeddings, pool_interaction_embeddings
 
 device = "cpu" if not torch.cuda.is_available() else "cuda"
 
@@ -77,7 +78,10 @@ class Encoder_block(nn.Module):
                     in_ex = self.linear(self.exercise_embed(in_ex))
                 embs.append(in_ex)
             if self.total_cat > 0:
-                in_cat = self.emb_cat(in_cat)
+                # Identity on [B,T]; on [B,T,K] mean-pools the question's KCs
+                # with -1 padding masked, as pykt's QueEmb.get_avg_skill_emb
+                # does.  in_ex is a question id, so it is left alone.
+                in_cat = pool_concept_embeddings(self.emb_cat, in_cat, self.total_cat)
                 embs.append(in_cat)
             out = embs[0]
             for i in range(1, len(embs)):
@@ -131,7 +135,12 @@ class Decoder_block(nn.Module):
         if first_block:
             in_in = self.embd_res(in_res)
             que_emb = self.embd_ex(in_ex + self.num_q * in_res)
-            cat_emb = self.emb_cat(in_cat + self.num_c * in_res)
+            # Concept-response interaction: identity on [B,T], mean-pooled over
+            # the question's KCs on [B,T,K].  in_ex is a question id, so its
+            # interaction embedding stays a plain lookup.
+            cat_emb = pool_interaction_embeddings(
+                self.emb_cat, in_cat, in_res, self.num_c
+            )
             out = in_in + que_emb + cat_emb + in_pos
         else:
             out = in_res

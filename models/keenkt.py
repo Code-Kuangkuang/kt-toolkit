@@ -27,6 +27,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from core.registry import MODEL_REGISTRY
+from .multi_concept import pool_concept_embeddings, pool_interaction_embeddings
 
 
 def _pairwise_nig_distance(
@@ -458,14 +459,17 @@ class KeenKT(nn.Module):
         questions: torch.Tensor,
         responses: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        # Identity on [B,T]; on [B,T,K] mean-pools the question's KCs with
+        # -1 padding masked, as pykt's QueEmb.get_avg_skill_emb does.
         concept_raw = {
-            name: table(concepts)
+            name: pool_concept_embeddings(table, concepts, self.num_c)
             for name, table in self.concept_embeddings.items()
         }
         if self.separate_qa:
-            response_ids = concepts + self.num_c * responses
             qa_raw = {
-                name: table(response_ids)
+                name: pool_interaction_embeddings(
+                    table, concepts, responses, self.num_c
+                )
                 for name, table in self.response_embeddings.items()
             }
         else:
@@ -478,7 +482,9 @@ class KeenKT(nn.Module):
         qa_mean, qa_uncertainty = self._nig_moments(qa_raw)
 
         item_effect = self.item_difficulty(questions)
-        concept_effect = self.concept_variation(concepts)
+        concept_effect = pool_concept_embeddings(
+            self.concept_variation, concepts, self.num_c
+        )
         concept_mean = concept_mean + item_effect * concept_effect
         concept_uncertainty = concept_uncertainty + item_effect * concept_effect
         return concept_mean, concept_uncertainty, qa_mean, qa_uncertainty

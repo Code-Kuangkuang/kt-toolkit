@@ -3,6 +3,7 @@ import torch
 from torch.nn import Module, Embedding, LSTM, Linear, Dropout
 
 from core.registry import MODEL_REGISTRY
+from .multi_concept import pool_concept_embeddings, pool_interaction_embeddings
 from .utils import build_question_embedding, load_pretrained_question_matrix
 
 
@@ -150,8 +151,12 @@ class DKTPEBG(Module):
         else:
             q = q.long().clamp(min=0, max=self.num_c - 1)
             r = r.long()
-            x = q + self.num_c * r
-            xemb = self.interaction_emb(x)
+            # Identity on [B,T]; on [B,T,K] mean-pools the question's KCs
+            # with -1 padding masked, as DKT and pykt's
+            # QueEmb.get_avg_skill_emb do.
+            xemb = pool_interaction_embeddings(
+                self.interaction_emb, q, r, self.num_c
+            )
 
         h, _ = self.lstm_layer(xemb)
         h = self.dropout_layer(h)

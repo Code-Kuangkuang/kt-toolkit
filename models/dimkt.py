@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 
 from core.registry import MODEL_REGISTRY
+from .multi_concept import pool_concept_embeddings
 
 @MODEL_REGISTRY.register("dimkt")
 class DIMKT(Module):
@@ -47,13 +48,16 @@ class DIMKT(Module):
         if self.batch_size != len(q):
             self.batch_size = len(q)
         q_emb = self.q_emb(Variable(q))
-        c_emb = self.c_emb(Variable(c))
+        # Identity on [B,T]; on [B,T,K] mean-pools the question's KCs with -1
+        # padding masked, as pykt's QueEmb.get_avg_skill_emb does.  q/sd/qd/a
+        # are indexed by question, difficulty and response, so they stay put.
+        c_emb = pool_concept_embeddings(self.c_emb, c, self.num_c)
         sd_emb = self.sd_emb(Variable(sd))
         qd_emb = self.qd_emb(Variable(qd))
         a_emb = self.a_emb(Variable(a))
 
         target_q = self.q_emb(Variable(qshft))
-        target_c = self.c_emb(Variable(cshft))
+        target_c = pool_concept_embeddings(self.c_emb, cshft, self.num_c)
         target_sd = self.sd_emb(Variable(sdshft))
         target_qd = self.qd_emb(Variable(qdshft))
        

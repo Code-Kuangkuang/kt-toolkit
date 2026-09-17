@@ -31,16 +31,22 @@ def build_optimizer(train_cfg, model_cfg, model):
 
     optimizer_name = train_cfg.get("optimizer", "adam").lower()
     weight_decay = model_cfg.get("weight_decay", train_cfg.get("weight_decay", 0.0))
+    base_lr = model_cfg["learning_rate"]
+    parameters = (
+        model.param_groups(base_lr)
+        if callable(getattr(model, "param_groups", None))
+        else model.parameters()
+    )
     if optimizer_name == "sgd":
         return torch.optim.SGD(
-            model.parameters(),
-            lr=model_cfg["learning_rate"],
+            parameters,
+            lr=base_lr,
             momentum=0.9,
             weight_decay=weight_decay,
         )
     return torch.optim.Adam(
-        model.parameters(),
-        lr=model_cfg["learning_rate"],
+        parameters,
+        lr=base_lr,
         weight_decay=weight_decay,
     )
 
@@ -122,6 +128,8 @@ def apply_overrides(train_cfg, model_cfg, overrides):
         "kl_warmup_epochs",
         "clean_prior",
         "frequency_tau",
+        "frequency_gamma",
+        "use_frequency_scale",
         "reliability_hidden",
         "reliability_init",
         "use_reliability",

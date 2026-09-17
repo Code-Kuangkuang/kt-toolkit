@@ -9,6 +9,7 @@ import numpy as np
 import math 
 
 from core.registry import MODEL_REGISTRY
+from .multi_concept import pool_concept_embeddings, pool_interaction_embeddings
 
 def rearrange(x, pattern, **axes_lengths):
     if pattern == 'j -> 1 j':
@@ -90,10 +91,13 @@ class stableKT(nn.Module):
                 torch.nn.init.constant_(p, 0.)
 
     def base_emb(self, q_data, target):
-        q_embed_data = self.q_embed(q_data)  # BS, seqlen,  d_model# c_ct
+        # Identity on [B,T]; on [B,T,K] mean-pools the question's KCs with -1
+        # padding masked, matching AKT and pykt's QueEmb.get_avg_skill_emb.
+        q_embed_data = pool_concept_embeddings(self.q_embed, q_data, self.n_question)  # BS, seqlen,  d_model# c_ct
         if self.separate_qa:
-            qa_data = q_data + self.n_question * target
-            qa_embed_data = self.qa_embed(qa_data)
+            qa_embed_data = pool_interaction_embeddings(
+                self.qa_embed, q_data, target, self.n_question
+            )
         else:
             # BS, seqlen, d_model # c_ct+ g_rt =e_(ct,rt)
             qa_embed_data = self.qa_embed(target)+q_embed_data
@@ -121,13 +125,13 @@ class stableKT(nn.Module):
             q_embed_data, qa_embed_data = self.base_emb(q_data, target)
         if self.n_pid > 0 and emb_type.find("norasch") == -1: # have problem id
             if emb_type.find("aktrasch") == -1:
-                q_embed_diff_data = self.q_embed_diff(q_data)  
+                q_embed_diff_data = pool_concept_embeddings(self.q_embed_diff, q_data, self.n_question)  
                 pid_embed_data = self.difficult_param(pid_data)  
                 q_embed_data = q_embed_data + pid_embed_data * \
                     q_embed_diff_data  
 
             else:
-                q_embed_diff_data = self.q_embed_diff(q_data) 
+                q_embed_diff_data = pool_concept_embeddings(self.q_embed_diff, q_data, self.n_question) 
                 pid_embed_data = self.difficult_param(pid_data) 
                 q_embed_data = q_embed_data + pid_embed_data * \
                     q_embed_diff_data 

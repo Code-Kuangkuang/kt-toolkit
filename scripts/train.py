@@ -72,7 +72,14 @@ def _find_best_model_path(run_dir: Path):
     return str(sorted(candidates)[0])
 
 
-def _load_completed_fold(cv_dir: Path, fold_id: int, dataset_name: str, model_name: str):
+def _load_completed_fold(
+    cv_dir: Path,
+    fold_id: int,
+    dataset_name: str,
+    model_name: str,
+    train_label_flip_ratio: float,
+    train_label_flip_seed: int,
+):
     for run_config_path in sorted(cv_dir.glob("*/run_config.json")):
         run_dir = run_config_path.parent
         best_metrics_path = run_dir / "best_metrics.json"
@@ -88,6 +95,13 @@ def _load_completed_fold(cv_dir: Path, fold_id: int, dataset_name: str, model_na
         if run_config.get("dataset_name") != dataset_name:
             continue
         if run_config.get("model_name") != model_name:
+            continue
+        flip_config = run_config.get("train_label_flip") or {}
+        saved_ratio = float(flip_config.get("requested_ratio", 0.0))
+        saved_seed = int(flip_config.get("seed", run_config.get("seed", 3407)))
+        if abs(saved_ratio - train_label_flip_ratio) > 1e-12:
+            continue
+        if train_label_flip_ratio > 0 and saved_seed != train_label_flip_seed:
             continue
         return {
             "fold": fold_id,
@@ -207,6 +221,16 @@ def main(
         "--seed",
         help="Random seed for reproducibility"
         ),
+    train_label_flip_ratio: float = typer.Option(
+        0.0,
+        "--train_label_flip_ratio", "--train-label-flip-ratio",
+        help="Fraction of binary responses to flip in the training split only. Range: [0, 1].",
+    ),
+    train_label_flip_seed: Optional[int] = typer.Option(
+        None,
+        "--train_label_flip_seed", "--train-label-flip-seed",
+        help="Seed for selecting flipped response positions. Defaults to --seed.",
+    ),
 
     # GPU options
     gpu: int = typer.Option(
@@ -250,6 +274,9 @@ def main(
         ),
 ):
     dataset_name = normalize_dataset_name(dataset_name)
+    if not 0.0 <= train_label_flip_ratio <= 1.0:
+        raise typer.BadParameter("--train-label-flip-ratio must be in [0, 1].")
+    resolved_flip_seed = seed if train_label_flip_seed is None else train_label_flip_seed
     kt_cfg_raw = load_cfg(kt_config)
     data_config_raw = load_cfg(data_config_path)
 
@@ -284,6 +311,8 @@ def main(
             cv_run_name=cv_run_name,
             overrides=overrides,
             gpu_id=gpu,
+            train_label_flip_ratio=train_label_flip_ratio,
+            train_label_flip_seed=resolved_flip_seed,
         )
 
     if cv == 1:
@@ -296,6 +325,9 @@ def main(
             print(f"[bold]Continuing CV run directory:[/bold] {cv_dir}")
         else:
             cv_run_name = f"cv-{dataset_name}-{model_name}-{ts}"
+            if train_label_flip_ratio > 0:
+                ratio_tag = f"{train_label_flip_ratio:g}".replace(".", "p")
+                cv_run_name = f"{cv_run_name}-flip{ratio_tag}"
             if add_uuid == 1:
                 cv_run_name = f"{cv_run_name}-{uuid.uuid4()}"
             cv_dir = os.path.join(save_dir, cv_run_name)
@@ -305,7 +337,14 @@ def main(
         fold_results = []
         for fid in fold_ids:
             if skip_completed == 1:
-                completed = _load_completed_fold(cv_dir_path, fid, dataset_name, model_name)
+                completed = _load_completed_fold(
+                    cv_dir_path,
+                    fid,
+                    dataset_name,
+                    model_name,
+                    train_label_flip_ratio,
+                    resolved_flip_seed,
+                )
                 if completed is not None:
                     print(f"\n[yellow]===== CV Fold {fid} skipped: completed run found =====[/yellow]\n")
                     fold_results.append(completed)
@@ -322,6 +361,11 @@ def main(
             "emb_type": emb_type,
             "folds": fold_ids,
             "seed": seed,
+            "train_label_flip": {
+                "requested_ratio": train_label_flip_ratio,
+                "seed": resolved_flip_seed,
+                "scope": "train_only",
+            },
             "save_dir": save_dir,
             "cv_dir": cv_dir,
             "per_fold": fold_results,

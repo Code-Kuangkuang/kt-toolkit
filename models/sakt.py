@@ -2,7 +2,8 @@ import torch
 
 from torch.nn import Module, Embedding, Linear, MultiheadAttention, LayerNorm, Dropout
 from core.registry import MODEL_REGISTRY
-from .utils import transformer_FFN, pos_encode, ut_mask, get_clones
+from .utils import transformer_FFN, get_clones
+from .multi_concept import pool_concept_embeddings, pool_interaction_embeddings
 
 @MODEL_REGISTRY.register("sakt")
 class SAKT(Module):
@@ -31,13 +32,17 @@ class SAKT(Module):
         self.pred = Linear(self.emb_size, 1)
 
     def base_emb(self, q, r, qry):
-        q = q.long().clamp(min=0, max=self.num_c - 1)
-        qry = qry.long().clamp(min=0, max=self.num_c - 1)
         r = r.long().clamp(min=0, max=1)
-        x = q + self.num_c * r
-        qshftemb, xemb = self.exercise_emb(qry), self.interaction_emb(x)
+        qshftemb = pool_concept_embeddings(
+            self.exercise_emb, qry, self.num_c
+        )
+        xemb = pool_interaction_embeddings(
+            self.interaction_emb, q, r, self.num_c
+        )
 
-        pos_ids = pos_encode(xemb.shape[1]).clamp(max=self.position_emb.num_embeddings - 1)
+        pos_ids = torch.arange(
+            xemb.shape[1], device=xemb.device
+        ).unsqueeze(0).clamp(max=self.position_emb.num_embeddings - 1)
         posemb = self.position_emb(pos_ids)
         xemb = xemb + posemb
         return qshftemb, xemb
@@ -73,7 +78,10 @@ class Blocks(Module):
         q, k, v = q.permute(1, 0, 2), k.permute(1, 0, 2), v.permute(1, 0, 2)
         # attn -> drop -> skip -> norm 
         # transformer: attn -> drop -> skip -> norm transformer default
-        causal_mask = ut_mask(seq_len = k.shape[0])
+        causal_mask = torch.triu(
+            torch.ones(k.shape[0], k.shape[0], device=k.device, dtype=torch.bool),
+            diagonal=1,
+        )
         attn_emb, _ = self.attn(q, k, v, attn_mask=causal_mask)
 
         attn_emb = self.attn_dropout(attn_emb)

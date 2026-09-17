@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import math
 import numpy as np
 from core.registry import MODEL_REGISTRY
+from .multi_concept import pool_concept_embeddings, pool_interaction_embeddings
 
 
 class Dim:
@@ -200,13 +201,22 @@ class UKT(nn.Module):
                 torch.nn.init.constant_(p, 0.0)
 
     def base_emb(self, q_data, target):
-        q_mean_embed_data = self.mean_q_embed(q_data)
-        q_cov_embed_data = self.cov_q_embed(q_data)
+        # Identity on [B,T]; on [B,T,K] mean-pools the question's KCs with -1
+        # padding masked, as pykt's QueEmb.get_avg_skill_emb does.  The mean and
+        # covariance branches are pooled independently; averaging keeps the
+        # covariance branch non-negative, so the Wasserstein attention is
+        # unaffected.  The `target` lookups below index the response, not a
+        # concept, so they stay plain.
+        q_mean_embed_data = pool_concept_embeddings(self.mean_q_embed, q_data, self.num_c)
+        q_cov_embed_data = pool_concept_embeddings(self.cov_q_embed, q_data, self.num_c)
 
         if self.separate_qa:
-            qa_data = q_data + self.num_c * target
-            qa_mean_embed_data = self.mean_qa_embed(qa_data)
-            qa_cov_embed_data = self.cov_qa_embed(qa_data)
+            qa_mean_embed_data = pool_interaction_embeddings(
+                self.mean_qa_embed, q_data, target, self.num_c
+            )
+            qa_cov_embed_data = pool_interaction_embeddings(
+                self.cov_qa_embed, q_data, target, self.num_c
+            )
         else:
             qa_mean_embed_data = self.mean_qa_embed(target) + q_mean_embed_data
             qa_cov_embed_data = self.cov_qa_embed(target) + q_cov_embed_data
@@ -283,7 +293,7 @@ class UKT(nn.Module):
                 )
             pid_data = torch.cat((pid[:, 0:1], next_pid), dim=1)
             if emb_type.find("aktrasch") == -1:
-                q_embed_diff_data = self.q_embed_diff(q_data)
+                q_embed_diff_data = pool_concept_embeddings(self.q_embed_diff, q_data, self.num_c)
                 pid_embed_data = self.difficult_param(pid_data)
                 q_mean_embed_data = q_mean_embed_data + pid_embed_data * q_embed_diff_data
                 q_cov_embed_data = q_cov_embed_data + pid_embed_data * q_embed_diff_data
@@ -291,7 +301,7 @@ class UKT(nn.Module):
                     mean_q_aug_embed_data = mean_q_aug_embed_data + pid_embed_data * q_embed_diff_data
                     cov_q_aug_embed_data = cov_q_aug_embed_data + pid_embed_data * q_embed_diff_data
             else:
-                q_embed_diff_data = self.q_embed_diff(q_data)
+                q_embed_diff_data = pool_concept_embeddings(self.q_embed_diff, q_data, self.num_c)
                 pid_embed_data = self.difficult_param(pid_data)
                 q_mean_embed_data = q_mean_embed_data + pid_embed_data * q_embed_diff_data
                 q_cov_embed_data = q_cov_embed_data + pid_embed_data * q_embed_diff_data

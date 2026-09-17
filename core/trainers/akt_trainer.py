@@ -4,6 +4,7 @@ from torch.nn.functional import binary_cross_entropy
 
 from core.registry import TRAINER_REGISTRY
 from core.trainer import BaseTrainer
+from models.multi_concept import concept_validity
 
 
 @TRAINER_REGISTRY.register("lefokt")
@@ -77,6 +78,12 @@ class AKTTrainer(BaseTrainer):
 
         if q_data is None:
             raise ValueError("AKTTrainer requires concept or question sequences.")
+        target_concepts = cshft if cshft is not None else qshft
+        _, target_has_concept = concept_validity(
+            target_concepts, self.model.n_question
+        )
+        if torch.any(sm.bool() & ~target_has_concept):
+            raise ValueError("AKT found a scored question without a valid concept id.")
         if pid_data is None and getattr(self.model, "n_pid", 0) > 0:
             raise ValueError("AKTTrainer requires question ids when n_pid > 0.")
 

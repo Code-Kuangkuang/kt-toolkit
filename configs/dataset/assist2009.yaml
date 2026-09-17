@@ -3,6 +3,10 @@ raw_path: data/assist2009/skill_builder_data_corrected_collapsed.csv
 dpath: data/assist2009
 configf: configs/data_config.json
 
+# Scaffolding sub-problems only appear after a wrong answer, so keeping them
+# leaks the previous label. Set true only to reproduce pre-filtering numbers.
+keep_scaffolding: false
+
 
 min_seq_len: 3
 maxlen: 200

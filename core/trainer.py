@@ -142,3 +142,22 @@ class BaseTrainer:
     def evaluate_test(self):
         """Evaluate model on the labeled test set when one is available."""
         return self._score_loader(self.test_loader, prefix="test")
+
+    def evaluate_window_test(self):
+        """Score the windowed test set -- the protocol pykt reports.
+
+        The plain test file chops a learner into non-overlapping chunks, so a
+        position sitting near a chunk boundary is scored with almost no
+        history.  The windowed file instead emits one row per position, each
+        carrying the full preceding window, and scores only that last position.
+        Same predictions, far more history, so the numbers are not
+        interchangeable -- both are reported rather than one replacing the
+        other.
+
+        The loader is attached by the runner rather than taken through
+        __init__, because every trainer subclass declares its own constructor
+        and a new required keyword would break all of them.
+        """
+        return self._score_loader(
+            getattr(self, "window_test_loader", None), prefix="window_test"
+        )

@@ -28,27 +28,27 @@ def compute_question_frequency_counts(
     path = os.path.join(dpath, train_valid_file)
     if not os.path.exists(path):
         raise FileNotFoundError(
-            f"removed_model question-frequency source not found: {path}"
+            f"Question-frequency source not found: {path}"
         )
     num_q = int(num_q)
     if num_q <= 0:
-        raise ValueError(f"removed_model question counts require num_q > 0, got {num_q}.")
+        raise ValueError(f"Question counts require num_q > 0, got {num_q}.")
 
     df = pd.read_csv(path, dtype=str, keep_default_na=False)
     required = {"fold", "questions"}
     missing = required - set(df.columns)
     if missing:
         raise ValueError(
-            f"removed_model frequency source missing columns: {sorted(missing)}"
+            f"Frequency source missing columns: {sorted(missing)}"
         )
 
     fold_set = {int(fold) for fold in folds}
     if not fold_set:
-        raise ValueError("removed_model question-frequency folds must not be empty.")
+        raise ValueError("Question-frequency folds must not be empty.")
     selected = df[df["fold"].astype(int).isin(fold_set)]
     if selected.empty:
         raise ValueError(
-            f"No removed_model frequency rows found for folds {sorted(fold_set)}."
+            f"No frequency rows found for folds {sorted(fold_set)}."
         )
 
     counts = np.zeros(num_q, dtype=np.int64)
@@ -58,7 +58,7 @@ def compute_question_frequency_counts(
                 continue
             if question < 0 or question >= num_q:
                 raise ValueError(
-                    "removed_model question ID out of range in frequency source; "
+                    "Question ID out of range in frequency source; "
                     f"expected -1 or [0, {num_q - 1}], got {question}."
                 )
             counts[question] += 1

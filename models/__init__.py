@@ -1,8 +1,10 @@
 from .dkt import DKT
+from .hd_dkt import HDDKT
 from .dkt_pebg import DKTPEBG
 from .dkt_plus import DKTPlus
 from .dkvmn import DKVMN
 from .akt import AKT
+from .hd_akt import HDAKT
 from .sakt import SAKT
 from .qikt import QIKTNet
 from .gkt import GKT
@@ -12,14 +14,12 @@ from .atkt import ATKT
 from .iekt import IEKT
 from .hawkes import HawkesKT
 from .lpkt import LPKT
+from .hdkt import HDKT
 from .deep_irt import DeepIRT
 from .saint import SAINT
 from .saint_plus import SAINTp
-from .removed_model import removed_model, GBKTTheoryConstrained
-from .removed_model import removed_model
-from .removed_model import removed_model
-from .removed_model import a removed model
 from .simplekt import SimpleKT
+from .hd_simplekt import HDSimpleKT
 from .ukt import UKT
 from .keenkt import KeenKT
 from .dkt_forget import DKTForget
@@ -34,4 +34,6 @@ from .rekt import ReKT
 from .lefokt_akt import LEFOKT_AKT
 from .hqaf import HQAFKT
 
-__all__ = ["DKT", "DKTPEBG", "DKVMN", "AKT", "DKTPlus", "SAKT", "QIKTNet", "GKT", "DGEKT", "KQN", "ATKT", "IEKT", "HawkesKT", "LPKT", "DeepIRT", "SAINT", "SAINTp", "removed_model", "removed_model", "removed_model", "a removed model", "GBKTTheoryConstrained", "SimpleKT", "UKT", "KeenKT", "DKTForget", "SKVMN", "DIMKT", "ATDKT", "StableKT", "SparseKT", "DTransformerModel", "RobustKT", "ReKT", "LEFOKT_AKT", "HQAFKT"]
+# Keep the public export aligned with the import-time model registration.
+
+__all__ = ["DKT", "HDDKT", "DKTPEBG", "DKVMN", "AKT", "HDAKT", "DKTPlus", "SAKT", "QIKTNet", "GKT", "DGEKT", "KQN", "ATKT", "IEKT", "HawkesKT", "LPKT", "HDKT", "DeepIRT", "SAINT", "SAINTp", "SimpleKT", "HDSimpleKT", "UKT", "KeenKT", "DKTForget", "SKVMN", "DIMKT", "ATDKT", "StableKT", "SparseKT", "DTransformerModel", "RobustKT", "ReKT", "LEFOKT_AKT", "HQAFKT"]

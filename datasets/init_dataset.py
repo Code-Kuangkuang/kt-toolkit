@@ -4,10 +4,15 @@ from torch.utils.data import DataLoader
 
 from core.registry import DATASET_REGISTRY
 from .kt_dataset import KTDataset, KTQueDataset
+from .label_noise import apply_train_label_flip
 
 
 ALL_IN_ONE_DATASET_MODELS = {
     "lpkt",
+    "hdkt",
+    "hd_dkt",
+    "hd_akt",
+    "hd_simplekt",
     "atdkt",
     "dimkt",
     "stablekt",
@@ -23,12 +28,88 @@ ALL_IN_ONE_DATASET_MODELS = {
     "hqaf",
     "hqaf_kt",
     "keenkt",
-    "removed_model",
-    "removed_model",
-    "removed_model",
     "dgekt",
 }
 ONE_BY_ONE_DATASET_MODELS = {"hawkes"}
+MULTI_CONCEPT_MODELS = {
+    "dkt",
+    "sakt",
+    "akt",
+    "simplekt",
+    "dkvmn",
+    "dkt+",
+    "deep_irt",
+    "stablekt",
+    "sparsekt",
+    "lefokt_akt",
+    "skvmn",
+    "atkt",
+    "robustkt",
+    "dimkt",
+    "saint",
+    "saint_plus",
+    "iekt",
+    "lpkt",
+    "atdkt",
+    "dtransformer",
+    "dkt_forget",
+    "dkt_pebg",
+    "hqaf",
+    "keenkt",
+    "ukt",
+    "kqn",
+    "hd_dkt",
+    "hd_akt",
+    "hd_simplekt",
+    "hdkt",
+    "qikt",
+}
+
+
+def resolve_concept_mode(model_name, override=None):
+    """Whether a model is fed every KC of a question or only the first.
+
+    The default comes from MULTI_CONCEPT_MODELS -- membership means the model's
+    embedding code pools a [B,T,K] concept tensor.  `override` (a `concept_mode`
+    key in the model's config block) forces it either way, which is what makes
+    "how much does truncation cost?" a one-variable experiment rather than a
+    code edit.
+    """
+    if override in ("multi", "first"):
+        return override
+    if override is not None:
+        raise ValueError(f"concept_mode must be 'multi' or 'first', got {override!r}.")
+    return "multi" if str(model_name).lower() in MULTI_CONCEPT_MODELS else "first"
+
+
+def protocol_stamp(model_name, dataset_mode, max_concepts, concept_mode_override=None,
+                   eval_window=True):
+    """The evaluation protocol a run actually used, for run_config.json.
+
+    Two runs are only comparable when these values match.  Recording them per
+    run is what lets a finished comparison table be checked after the fact,
+    instead of trusting that every row was produced the same way -- which is
+    how a table came to mix `multi` and `first` concept handling.
+    """
+    from datasets.kt_dataset import SCORE_REPEATED_KC
+
+    width = int(max_concepts or 1)
+    if dataset_mode == "one_by_one":
+        # Every KC is its own row, so the model sees all of them regardless of
+        # the MULTI_CONCEPT_MODELS list -- that list only drives all_in_one.
+        concept_mode, visible = "expanded", "all"
+    else:
+        concept_mode = resolve_concept_mode(model_name, concept_mode_override)
+        visible = "all" if concept_mode == "multi" or width <= 1 else f"first_of_{width}"
+    return {
+        "dataset_mode": dataset_mode,
+        "concept_mode": concept_mode,
+        "max_concepts": width,
+        "concepts_visible": visible,
+        "score_repeated_kc": bool(SCORE_REPEATED_KC),
+        # False means this run has no pykt-comparable windowed number.
+        "eval_window": bool(eval_window),
+    }
 
 
 def _resolve_sequence_path(cfg, primary_key, fallback_key):
@@ -61,12 +142,15 @@ def build_dataloaders(dataset_name, data_config, fold, batch_size, model_name=No
     include_history = kwargs.get("include_history", False)
     include_hqaf_attrs = kwargs.get("include_hqaf_attrs", False)
     hqaf_feature_maps = kwargs.get("hqaf_feature_maps")
+    train_label_flip_ratio = float(kwargs.get("train_label_flip_ratio", 0.0))
+    train_label_flip_seed = int(kwargs.get("train_label_flip_seed", 3407))
     model_name_lower = (model_name or "").lower()
 
-    if model_name_lower in ALL_IN_ONE_DATASET_MODELS:
-        dataset_mode = "all_in_one"
-    elif model_name_lower in ONE_BY_ONE_DATASET_MODELS:
-        dataset_mode = "one_by_one"
+    if dataset_mode is None:
+        if model_name_lower in ALL_IN_ONE_DATASET_MODELS:
+            dataset_mode = "all_in_one"
+        elif model_name_lower in ONE_BY_ONE_DATASET_MODELS:
+            dataset_mode = "one_by_one"
 
     if dataset_mode == "one_by_one":
         # One-by-One mode: use KTDataset with 1D concept sequences
@@ -92,14 +176,7 @@ def build_dataloaders(dataset_name, data_config, fold, batch_size, model_name=No
         max_concepts = cfg.get("max_concepts", 4)
         all_folds = set(cfg["folds"])
 
-        concept_mode = "multi" if (model_name or "").lower() in {
-            "qikt",
-            "removed_model",
-            "removed_model",
-            "removed_model",
-            "removed_model",
-            "gbkt_tc",
-        } else "first"
+        concept_mode = resolve_concept_mode(model_name_lower, kwargs.get("concept_mode"))
         train_ds = KTQueDataset(
             train_valid_path, cfg["input_type"], all_folds - {fold},
             concept_num=cfg.get("num_c", 0), max_concepts=max_concepts, concept_mode=concept_mode,
@@ -135,18 +212,37 @@ def build_dataloaders(dataset_name, data_config, fold, batch_size, model_name=No
             include_hqaf_attrs=include_hqaf_attrs, hqaf_feature_maps=hqaf_feature_maps,
         )
 
+    train_ds = apply_train_label_flip(
+        train_ds,
+        ratio=train_label_flip_ratio,
+        seed=train_label_flip_seed,
+    )
+    flip_info = train_ds.label_flip_info
+    print(
+        "Train label flip: "
+        f"requested={flip_info['requested_ratio']:.4f}, "
+        f"actual={flip_info['actual_ratio']:.4f}, "
+        f"flipped={flip_info['flipped_count']}/{flip_info['eligible_count']}, "
+        f"seed={flip_info['seed']}, "
+        f"mask_sha256={flip_info['mask_sha256'][:12]}"
+    )
+
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers)
     valid_loader = DataLoader(valid_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
     return train_loader, valid_loader
 
 
 @DATASET_REGISTRY.register("kt_test")
-def build_test_dataloaders(dataset_name, data_config, batch_size, model_name=None, dataset_mode=None, num_workers=0, use_timestamps=False, **kwargs):
+def build_test_dataloaders(dataset_name, data_config, batch_size, model_name=None, dataset_mode=None, num_workers=0, use_timestamps=False, window=False, **kwargs):
     """Build test dataloaders for evaluation.
 
     Args:
         dataset_mode: "one_by_one" or "all_in_one"
         use_timestamps: Whether to load timestamps
+        window: read the windowed test file instead of the plain one.  The
+            windowed file gives every scored position a full-length history
+            (one row per position) and is the file pykt reports on; it is ~20x
+            larger, so it is only worth scoring once at the end of a run.
     """
     if dataset_name in data_config:
         cfg = data_config[dataset_name]
@@ -160,22 +256,20 @@ def build_test_dataloaders(dataset_name, data_config, batch_size, model_name=Non
     include_hqaf_attrs = kwargs.get("include_hqaf_attrs", False)
     hqaf_feature_maps = kwargs.get("hqaf_feature_maps")
     model_name_lower = (model_name or "").lower()
-    if model_name_lower in ALL_IN_ONE_DATASET_MODELS:
-        dataset_mode = "all_in_one"
-    elif model_name_lower in ONE_BY_ONE_DATASET_MODELS:
-        dataset_mode = "one_by_one"
+    if dataset_mode is None:
+        if model_name_lower in ALL_IN_ONE_DATASET_MODELS:
+            dataset_mode = "all_in_one"
+        elif model_name_lower in ONE_BY_ONE_DATASET_MODELS:
+            dataset_mode = "one_by_one"
 
     if dataset_mode == "all_in_one":
-        test_path = _resolve_sequence_path(cfg, "test_file_quelevel", "test_file")
+        test_path = _resolve_sequence_path(
+            cfg,
+            "test_window_file_quelevel" if window else "test_file_quelevel",
+            "test_window_file" if window else "test_file",
+        )
         max_concepts = cfg.get("max_concepts", 4)
-        concept_mode = "multi" if (model_name or "").lower() in {
-            "qikt",
-            "removed_model",
-            "removed_model",
-            "removed_model",
-            "removed_model",
-            "gbkt_tc",
-        } else "first"
+        concept_mode = resolve_concept_mode(model_name_lower, kwargs.get("concept_mode"))
         test_ds = KTQueDataset(
             test_path, cfg["input_type"], {-1},
             concept_num=cfg.get("num_c", 0), max_concepts=max_concepts, concept_mode=concept_mode,
@@ -185,7 +279,8 @@ def build_test_dataloaders(dataset_name, data_config, batch_size, model_name=Non
             include_hqaf_attrs=include_hqaf_attrs, hqaf_feature_maps=hqaf_feature_maps,
         )
     else:
-        test_path = os.path.join(cfg["dpath"], cfg["test_file"])
+        test_key = "test_window_file" if window else "test_file"
+        test_path = os.path.join(cfg["dpath"], cfg[test_key])
         test_ds = KTDataset(
             test_path, cfg["input_type"], {-1},
             use_timestamps=use_timestamps, time_idx_maps=time_idx_maps,

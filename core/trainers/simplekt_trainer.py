@@ -4,6 +4,7 @@ from torch.nn.functional import binary_cross_entropy
 
 from core.registry import TRAINER_REGISTRY
 from core.trainer import BaseTrainer
+from models.multi_concept import concept_validity
 
 
 @TRAINER_REGISTRY.register("simplekt")
@@ -20,6 +21,7 @@ class SimpleKTTrainer(BaseTrainer):
         metric_key="valid_auc",
         patience=10,
         test_loader=None,
+        other_config=None,
     ):
         super().__init__(num_epochs=num_epochs, hooks=hooks, test_loader=test_loader)
         self.model = model
@@ -29,6 +31,41 @@ class SimpleKTTrainer(BaseTrainer):
         self.device = device
         self.metric_key = metric_key
         self.patience = patience
+        self.other_config = other_config or {}
+        self.lambda_item_l2 = float(self.other_config.get("lambda_item_l2", 0.0))
+        if self.lambda_item_l2 < 0.0:
+            raise ValueError(
+                f"lambda_item_l2 must be non-negative, got {self.lambda_item_l2}."
+            )
+
+    def _item_l2_penalty(self):
+        """Explicit L2 on the per-item Rasch deviation table.
+
+        This is the control for "why not just use weight decay?".  In the linear
+        case an L2 penalty on the item parameter yields an effective shrinkage of
+        ``n_q/(n_q+lambda)``, i.e. the same graded form as the frequency gate,
+        without counting anything.  The penalty covers every real item row on
+        every step, matching what an optimizer's ``weight_decay`` would do, and
+        is written as a sum so ``lambda`` keeps the scale of the classical
+        derivation; sweep it logarithmically.
+
+        Returns ``None`` when disabled so the default path is untouched.
+        """
+        if self.lambda_item_l2 <= 0.0:
+            return None
+        table = getattr(self.model, "difficult_param", None)
+        if table is None:
+            raise ValueError(
+                "lambda_item_l2 was set but the model has no difficult_param "
+                "table; this control only applies to Rasch-style backbones."
+            )
+        num_pid = int(getattr(self.model, "num_pid", 0))
+        if num_pid <= 0:
+            raise ValueError(
+                "lambda_item_l2 requires num_pid > 0 (question-level data)."
+            )
+        # The final row is the padding slot and indexes no real item.
+        return self.lambda_item_l2 * table.weight[:num_pid].square().sum()
 
     def _train_epoch(self, epoch):
         self.model.train()
@@ -79,6 +116,11 @@ class SimpleKTTrainer(BaseTrainer):
 
         base_seqs = base_seqs.to(self.device).long()
         base_shft = base_shft.to(self.device).long()
+        _, target_has_concept = concept_validity(base_shft, self.model.num_c)
+        if torch.any(sm.bool() & ~target_has_concept):
+            raise ValueError(
+                "SimpleKT found a scored question without a valid concept id."
+            )
 
         # Prepare optional explicit problem-id sequences.
         if pidseqs is not None:
@@ -104,6 +146,9 @@ class SimpleKTTrainer(BaseTrainer):
             )
 
         loss = cal_loss(preds_for_loss, rshft, sm)
+        penalty = self._item_l2_penalty()
+        if penalty is not None:
+            loss = loss + penalty
         pred = torch.masked_select(preds_for_loss, sm)
         target = torch.masked_select(rshft, sm)
         return pred, target, loss
