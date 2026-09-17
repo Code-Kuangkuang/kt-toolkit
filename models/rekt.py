@@ -2,11 +2,18 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from core.model_inputs import InputSpec
 from core.registry import MODEL_REGISTRY
 
 
 @MODEL_REGISTRY.register("rekt")
 class ReKT(nn.Module):
+    class Inputs(InputSpec):
+        """Declares what this model needs; it derives nothing from the data."""
+
+        dataset_mode = "all_in_one"
+        requires_question_ids = True
+
     def __init__(
         self,
         skill_max=None,

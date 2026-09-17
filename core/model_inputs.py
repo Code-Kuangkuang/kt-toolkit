@@ -92,6 +92,13 @@ class ModelInputs:
     # Recorded verbatim in run_config.json, e.g. dkt_pebg's booster choice.
     run_config_extras: Dict[str, Any] = field(default_factory=dict)
 
+    # Which splits this model's derived inputs were fitted from, for the
+    # protocol block. `None` means "nothing to declare", which is different from
+    # "none": a spec that fits nothing leaves both alone and the runner keeps
+    # whatever the legacy chain set. See AGENTS.md on training-fold-only fitting.
+    feature_fit_scope: Optional[str] = None
+    graph_scope: Optional[str] = None
+
 
 class InputSpec:
     """Default behaviour: a model that needs nothing beyond the standard batch.

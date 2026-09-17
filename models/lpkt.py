@@ -5,6 +5,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 
+from core.model_inputs import InputSpec, ModelInputs
 from core.registry import MODEL_REGISTRY
 
 
@@ -67,6 +68,56 @@ def generate_qmatrix(dpath, num_q, num_c, gamma=0.0):
 
 @MODEL_REGISTRY.register("lpkt")
 class LPKT(nn.Module):
+    class Inputs(InputSpec):
+        """Builds the answer-time and interval-time vocabularies.
+
+        LPKT bins a raw duration into an index and embeds it, so `num_at` and
+        `num_it` are table heights. `always_train_folds` is the difference
+        between the two models: HDKT always fits on the current fold's training
+        rows, while LPKT does so only under all_in_one -- `folds=None` in
+        one_by_one reads every split, which is the historical pyKT behaviour and
+        is recorded as such rather than silently changed.
+        """
+
+        dataset_mode = "all_in_one"
+        requires_question_ids = True
+        always_train_folds = False
+
+        @classmethod
+        def prepare(cls, ctx):
+            from datasets.lpkt_utils import generate_time2idx
+
+            fold_scoped = cls.always_train_folds or ctx.dataset_mode == "all_in_one"
+            folds = ctx.train_folds() if fold_scoped else None
+            at2idx, it2idx = generate_time2idx(ctx.dataset_cfg, folds=folds)
+
+            sizes = {"num_at": len(at2idx) + 1, "num_it": len(it2idx) + 1}
+            dataset_updates = dict(sizes)
+            if fold_scoped:
+                dataset_updates["time_index_scope"] = "train_folds_only"
+                dataset_updates["time_index_folds"] = folds
+
+            inputs = ModelInputs(
+                model_cfg_updates=dict(sizes),
+                dataset_cfg_updates=dataset_updates,
+                dataset_kwargs={"time_idx_maps": {"at2idx": at2idx, "it2idx": it2idx}},
+                feature_fit_scope="train_folds" if fold_scoped else "train_valid_test",
+            )
+            cls.extend(inputs, ctx)
+            return inputs
+
+        @classmethod
+        def extend(cls, inputs, ctx):
+            """Hook for the subclass-specific part. Nothing shared to add."""
+
+        @classmethod
+        def extend(cls, inputs, ctx):
+            # Decides whether the initial knowledge state is a learned parameter
+            # or re-drawn per forward; see the note at the xavier_uniform_ call.
+            inputs.model_kwargs["use_runtime_concepts"] = (
+                ctx.dataset_mode == "all_in_one"
+            )
+
     """Linear Pedagogical Knowledge Tracing.
 
     Args:

@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 
+from core.model_inputs import InputSpec
 from core.registry import MODEL_REGISTRY
 from models.hdkt_core import HybridInteractionDenoiser
 from models.simplekt import SimpleKT
@@ -9,6 +10,11 @@ from models.multi_concept import pool_concept_embeddings
 
 @MODEL_REGISTRY.register("hd_simplekt")
 class HDSimpleKT(nn.Module):
+    class Inputs(InputSpec):
+        """Declares what this model needs; it derives nothing from the data."""
+
+        dataset_mode = "all_in_one"
+
     """SimpleKT backbone augmented with causal HD-KT interaction denoising."""
 
     def __init__(

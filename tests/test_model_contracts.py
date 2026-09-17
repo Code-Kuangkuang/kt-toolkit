@@ -103,14 +103,17 @@ KNOWN_NONDETERMINISM = {}
 
 KNOWN_ALIGNMENT_VIOLATIONS = {}
 
-# Constructor arguments the runner injects from its model_name chain rather than
-# from the config block. Sizes are arbitrary but must exceed the ids the
-# synthetic batch generates.
-#
-# Having to restate them here is the cost of that chain still existing: a model
-# built without them is built in a configuration no real run produces, and the
-# test then measures something that never happens. Each entry disappears when
-# its model moves to an `Inputs` spec.
+# Specs whose `prepare` reads the dataset from disk -- difficulty maps, gap
+# tables, time vocabularies, graphs. Calling them against synthetic sizes would
+# only test whether a stub context can imitate a data directory, so the values
+# they would compute are supplied below instead and the real code path is
+# covered by a training run.
+FITS_FROM_REAL_DATA = {
+    "dimkt", "hqaf", "lpkt", "hdkt", "dkt_forget", "dgekt", "gkt", "dkt_pebg",
+}
+
+# What those specs would have produced, at sizes this harness can use. Values are
+# arbitrary but must exceed the ids the synthetic batch generates.
 COMPUTED_CONSTRUCTOR_ARGS = {
     "dkt_forget": {"num_rgap": 8, "num_sgap": 8, "num_pcount": 8},
     "lpkt": {"num_at": 128, "num_it": 16},
@@ -246,11 +249,16 @@ def make_model_and_trainer(model_name, dataset_mode, device=DEVICE):
 
     kwargs = dict(cfg)
     kwargs.update(COMPUTED_CONSTRUCTOR_ARGS.get(model_name, {}))
-    if model_name in NEEDS_NUM_PID:
+    # Declarative parts of the spec always apply.
+    if spec.needs_num_pid:
         kwargs.setdefault("num_pid", NUM_Q)
     if model_name in RUNTIME_CONCEPT_MODELS:
         kwargs["use_runtime_concepts"] = dataset_mode == "all_in_one"
-    kwargs.update(spec.prepare(_MinimalContext(model_name, dataset_mode)).model_kwargs)
+    # `prepare` is only consulted for specs that compute from the synthetic
+    # sizes rather than from real files. A spec that reads the dataset is
+    # exercised by a real training run instead -- see FITS_FROM_REAL_DATA.
+    if model_name not in FITS_FROM_REAL_DATA:
+        kwargs.update(spec.prepare(_MinimalContext(model_name, dataset_mode)).model_kwargs)
 
     model = build_model(
         model_name,

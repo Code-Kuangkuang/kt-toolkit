@@ -26,6 +26,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from core.model_inputs import InputSpec
 from core.registry import MODEL_REGISTRY
 from .multi_concept import pool_concept_embeddings, pool_interaction_embeddings
 
@@ -333,6 +334,12 @@ class KeenKTBlock(nn.Module):
 
 @MODEL_REGISTRY.register("keenkt")
 class KeenKT(nn.Module):
+    class Inputs(InputSpec):
+        """Declares what this model needs; it derives nothing from the data."""
+
+        dataset_mode = "all_in_one"
+        requires_question_ids = True
+
     """Normal-Inverse-Gaussian knowledge tracing with causal attention."""
 
     def __init__(

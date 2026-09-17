@@ -8,6 +8,7 @@ from torch.nn.init import kaiming_normal_
 import torch.nn.functional as F
 # from models.utils import RobertaEncode
 
+from core.model_inputs import InputSpec
 from core.registry import MODEL_REGISTRY
 from .multi_concept import pool_concept_embeddings, pool_interaction_embeddings
 
@@ -157,6 +158,11 @@ class DKVMN(nn.Module):
 
 @MODEL_REGISTRY.register("skvmn")
 class SKVMN(Module):
+    class Inputs(InputSpec):
+        """Declares what this model needs; it derives nothing from the data."""
+
+        dataset_mode = "all_in_one"
+
     def __init__(self, num_c, dim_s, size_m, dropout=0.2, emb_type="qid", emb_path="", use_onehot=False):
         super().__init__()
         self.model_name = "skvmn"

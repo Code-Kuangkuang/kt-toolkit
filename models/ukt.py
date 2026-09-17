@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 import numpy as np
+from core.model_inputs import InputSpec
 from core.registry import MODEL_REGISTRY
 from .multi_concept import pool_concept_embeddings, pool_interaction_embeddings
 
@@ -90,6 +91,11 @@ class WassersteinNCELoss(nn.Module):
 
 @MODEL_REGISTRY.register("ukt")
 class UKT(nn.Module):
+    class Inputs(InputSpec):
+        """Declares what this model needs; it derives nothing from the data."""
+
+        needs_num_pid = True
+
     """
     Uncertainty-aware Knowledge Tracing (UKT) model.
     Uses stochastic embeddings (mean and covariance) to represent uncertainty in learning.

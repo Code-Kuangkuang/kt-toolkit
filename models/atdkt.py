@@ -4,6 +4,7 @@ from torch import nn
 from torch.nn import Module, Embedding, LSTM, Linear, Dropout, LayerNorm, TransformerEncoder, TransformerEncoderLayer, CrossEntropyLoss
 from .utils import ut_mask
 
+from core.model_inputs import InputSpec
 from core.registry import MODEL_REGISTRY
 from .multi_concept import pool_concept_embeddings, pool_interaction_embeddings
 
@@ -11,6 +12,23 @@ device = "cpu" if not torch.cuda.is_available() else "cuda"
 
 @MODEL_REGISTRY.register("atdkt")
 class ATDKT(Module):
+    class Inputs(InputSpec):
+        """Optionally asks the loader for a running correctness history.
+
+        Only the `his` embedding variants consume it, and computing it for the
+        others would cost a pass over the data for a tensor nobody reads.
+        """
+
+        dataset_mode = "all_in_one"
+        requires_question_ids = True
+
+        @classmethod
+        def prepare(cls, ctx):
+            inputs = super().prepare(ctx)
+            emb_type = str(ctx.model_cfg.get("emb_type", ""))
+            inputs.dataset_kwargs["include_history"] = "his" in emb_type
+            return inputs
+
     def __init__(self, num_q, num_c, seq_len, emb_size, dropout=0.1, emb_type='qid', 
             num_layers=1, num_attn_heads=5, l1=0.5, l2=0.5, l3=0.5, start=50, emb_path="", pretrain_dim=768):
         super().__init__()

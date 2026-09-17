@@ -23,6 +23,25 @@ models move and the check fails, it does not say which one broke.
 changes through `ModelInputs` instead of mutating dictionaries can legitimately
 reorder keys. Every difference should still be explainable; an unexplained one
 usually means a `model_cfg` key was left behind.
+
+Not every model is deterministic, so "bit-identical" is not always reachable.
+`record --repeat 2` runs the model twice against itself and stores the spread as
+a per-metric tolerance. dgekt needs this: `torch.sparse.mm` reduces with atomics
+on CUDA, so two identical runs differ by ~2.4e-6 on AUC -- more than its
+migration did.
+
+Tolerances are per metric because accuracy and AUC behave differently. Accuracy
+thresholds at 0.5, so it moves in steps of 1/N as single predictions flip, and
+its floor sits an order of magnitude above AUC's. On a barely-trained model
+whose AUC is near 0.5 the predictions cluster on the threshold and accuracy
+becomes almost unusable as a signal.
+
+When output noise swamps the comparison, check the inputs instead. The migration
+is pure code motion, so what a spec computes must equal what the old chain
+computed: build the artefact both ways and compare the tensors. That is how
+dgekt was settled -- its hypergraph and both transition matrices came out
+element-for-element identical, maximum difference 0.000e+00, which no amount of
+metric noise can obscure.
 """
 
 from __future__ import annotations
@@ -107,34 +126,57 @@ def flatten(obj, prefix=""):
         yield prefix, obj
 
 
-def compare(model, before, after):
-    """Return True when the run is bit-identical on the metrics that matter."""
+def compare(model, before, after, noise=None):
+    """True when the run matches, allowing for the model's own run-to-run noise.
+
+    `noise` is a per-metric tolerance measured by `record --repeat 2`: the same
+    model run twice with nothing changed. Without it the bar is exact equality,
+    which is right for a deterministic model and produces a false failure for one
+    that is not. dgekt differs by ~2.4e-6 between two identical runs, because
+    torch.sparse.mm reduces with atomics on CUDA -- larger than the 7e-7 its
+    migration showed, so demanding exactness there would have condemned a
+    correct change.
+    """
     b_metrics, b_config = before
     a_metrics, a_config = after
+    noise = noise or {}
 
     print(f"\n{'=' * 60}\n{model}\n{'=' * 60}")
     ok = True
 
-    print("指标（必须完全相同）:")
+    floor = max((abs(v) for v in noise.values()), default=0.0)
+    print("指标（必须完全相同）:" if not floor
+          else f"指标（容差 = 该模型自身噪声底 {floor:.2e}）:")
     for key in METRIC_KEYS:
         old, new = b_metrics.get(key), a_metrics.get(key)
         if old is None and new is None:
             continue
+        tol = abs(noise.get(key, 0.0))
         if old == new:
             print(f"  OK   {key:<24} {old}")
+        elif (isinstance(old, (int, float)) and isinstance(new, (int, float))
+              and tol > 0 and abs(new - old) <= tol):
+            print(f"  OK   {key:<24} {old}  ->  {new}   "
+                  f"(diff {new - old:+.3e} <= 噪声底 {tol:.3e})")
         else:
             ok = False
             delta = ""
             if isinstance(old, (int, float)) and isinstance(new, (int, float)):
-                delta = f"   (diff {new - old:+.10f})"
+                delta = f"   (diff {new - old:+.10f}"
+                delta += f", 噪声底 {tol:.3e})" if tol else ")"
             print(f"  FAIL {key:<24} {old}  ->  {new}{delta}")
 
     extra = (set(b_metrics) | set(a_metrics)) - set(METRIC_KEYS)
     for key in sorted(extra):
         old, new = b_metrics.get(key), a_metrics.get(key)
-        if old != new:
-            ok = False
-            print(f"  FAIL {key:<24} {old}  ->  {new}   (metric not in the known list)")
+        if old == new:
+            continue
+        tol = abs(noise.get(key, 0.0))
+        if (isinstance(old, (int, float)) and isinstance(new, (int, float))
+                and tol > 0 and abs(new - old) <= tol):
+            continue
+        ok = False
+        print(f"  FAIL {key:<24} {old}  ->  {new}   (metric not in the known list)")
 
     b_flat, a_flat = dict(flatten(b_config)), dict(flatten(a_config))
     diffs = [
@@ -161,6 +203,12 @@ def main():
     parser.add_argument("--dataset", default="assist2009")
     parser.add_argument("--fold", type=int, default=0)
     parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument(
+        "--repeat", type=int, default=1,
+        help="record 时重复跑几次，用两次之间的差作为噪声底。"
+             "不是所有模型都确定：dgekt 用 torch.sparse.mm，在 CUDA 上走原子加，"
+             "两次相同的运行会差 ~2e-6。对这类模型要求逐位相同只会得到假阳性。",
+    )
     args = parser.parse_args()
 
     models = [m.strip() for m in args.models.split(",") if m.strip()]
@@ -176,8 +224,26 @@ def main():
         )
 
         if args.mode == "record":
+            noise = {}
+            if args.repeat > 1:
+                print(f"  再跑 {args.repeat - 1} 次以量出自身噪声底…")
+                for _ in range(args.repeat - 1):
+                    again, _ = run_one(
+                        model, args.dataset, args.fold, args.epochs,
+                        BASELINE_DIR / args.mode,
+                    )
+                    for key in METRIC_KEYS:
+                        a, b = metrics.get(key), again.get(key)
+                        if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+                            noise[key] = max(noise.get(key, 0.0), abs(b - a))
+                worst = max(noise.values(), default=0.0)
+                print(f"  噪声底 {worst:.3e}"
+                      + ("（确定）" if worst == 0 else "（这个模型不确定）"))
             baseline_path.write_text(
-                json.dumps({"metrics": metrics, "config": config}, indent=2),
+                json.dumps(
+                    {"metrics": metrics, "config": config, "noise": noise},
+                    indent=2,
+                ),
                 encoding="utf-8",
             )
             print(f"  基线已写入 {baseline_path.relative_to(ROOT)}")
@@ -194,7 +260,8 @@ def main():
                 f"--fold {args.fold} --epochs {args.epochs}"
             )
         saved = json.loads(baseline_path.read_text(encoding="utf-8"))
-        if not compare(model, (saved["metrics"], saved["config"]), (metrics, config)):
+        if not compare(model, (saved["metrics"], saved["config"]),
+                       (metrics, config), noise=saved.get("noise")):
             failures.append(model)
 
     if args.mode == "verify":
@@ -202,8 +269,9 @@ def main():
         if failures:
             print(f"不等价: {', '.join(failures)}")
             print("指标变了就说明不是纯搬家。最常见的原因是某个 prepare 跑到了 set_seed 之后。")
+            print("如果这个模型本来就不确定，先用 `record --repeat 2` 量出它的噪声底。")
             raise SystemExit(1)
-        print(f"全部等价（{len(models)} 个模型，指标逐位相同）")
+        print(f"全部等价（{len(models)} 个模型）")
 
 
 if __name__ == "__main__":

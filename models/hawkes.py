@@ -3,11 +3,35 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from core.model_inputs import InputSpec, ModelInputs
 from core.registry import MODEL_REGISTRY
 
 
 @MODEL_REGISTRY.register("hawkes")
 class HawkesKT(nn.Module):
+    class Inputs(InputSpec):
+        """Hawkes needs question ids, its own weight init, and double precision.
+
+        The only model that needs anything done after construction, which is why
+        `post_build` exists on the spec at all.
+        """
+
+        dataset_mode = "one_by_one"
+
+        @classmethod
+        def validate(cls, ctx):
+            super().validate(ctx)
+            if ctx.dataset_cfg.get("num_q", 0) <= 0:
+                raise ValueError(
+                    f"Hawkes requires question ids, but dataset {ctx.dataset_name} "
+                    f"has num_q={ctx.dataset_cfg.get('num_q')}."
+                )
+
+        @classmethod
+        def post_build(cls, model, ctx):
+            model.apply(model.init_weights)
+            return model.double()
+
     """Hawkes Process based Knowledge Tracing.
 
     Args:

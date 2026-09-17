@@ -2,6 +2,7 @@ import torch
 
 from torch.nn import Module, Embedding, LSTM, Linear, Dropout
 
+from core.model_inputs import InputSpec, ModelInputs
 from core.registry import MODEL_REGISTRY
 from .multi_concept import pool_concept_embeddings, pool_interaction_embeddings
 from .utils import build_question_embedding, load_pretrained_question_matrix
@@ -9,6 +10,35 @@ from .utils import build_question_embedding, load_pretrained_question_matrix
 
 @MODEL_REGISTRY.register("dkt_pebg")
 class DKTPEBG(Module):
+    class Inputs(InputSpec):
+        """Resolves which pretrained PEBG embedding, if any, to warm-start from.
+
+        The strategy function already returns its decision instead of mutating,
+        so this is the thinnest of the migrations.
+        """
+
+        @classmethod
+        def prepare(cls, ctx):
+            from strategies import apply_dkt_pebg_strategy
+
+            model_cfg, booster = apply_dkt_pebg_strategy(
+                model_cfg=dict(ctx.model_cfg),
+                dataset_name=ctx.dataset_name,
+                dataset_cfg=ctx.dataset_cfg,
+                root_dir=ctx.root_dir,
+                fold_id=ctx.fold_id,
+            )
+            print(
+                "DKT-PEBG booster strategy resolved: "
+                f"strategy={booster.get('strategy')} "
+                f"enabled={booster.get('enabled')} "
+                f"emb_path={booster.get('emb_path', '')}"
+            )
+            return ModelInputs(
+                model_cfg_updates=model_cfg,
+                run_config_extras={"booster_info": booster},
+            )
+
     def __init__(
         self,
         num_c,

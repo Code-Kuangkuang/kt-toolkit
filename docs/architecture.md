@@ -278,23 +278,29 @@ Three rules the interface exists to enforce:
 
 ### Migration status
 
-In progress, one model at a time. The `model_name` chain still handles the
-models that have not moved, and shrinks as they do.
+Complete. `core/train_runner.py` has **no `model_name` checks left**, down from
+twenty, and the three hand-maintained lists are gone:
 
-| Moved | Remaining |
+| Removed | Replaced by |
 |---|---|
-| `gkt` | `dkt_pebg`, `lpkt`/`hdkt`, `dkt_forget`, `dimkt`, `hqaf`, `dgekt`, `hawkes` (post-build), and the three membership sets |
+| `ALL_IN_ONE_MODELS`, `ONE_BY_ONE_MODELS` | `Inputs.dataset_mode` |
+| `QUESTION_REQUIRED_MODELS` | `Inputs.requires_question_ids` |
+| the `num_pid` injection list | `Inputs.needs_num_pid` |
 
-Suggested order, dirtiest last: dgekt, hawkes, dkt_pebg, dkt_forget, dimkt,
-lpkt/hdkt, hqaf. The membership sets go last, once every model declares a spec.
-`hqaf` is the worst case: it rides DIMKT's `difficulty_maps` channel, an alias
-that is currently implicit and should become explicit in its spec.
+Nine models compute something in `prepare`: `gkt`, `dgekt`, `dkt_forget`,
+`dimkt`, `hqaf`, `lpkt`, `hdkt`, `dkt_pebg`, and `atdkt` for its history flag.
+`hawkes` is the only user of `post_build`. The rest declare and compute nothing.
 
-Also deferred: `other_config_keys` in the runner is a blacklist that exists only
-because `model_kwargs` is built by dumping the whole model config and filtering
-it. Explicit `model_kwargs` should make it unnecessary, but removing it means
-touching every model constructor -- a separate change, and one that would make
-the equivalence diff too large to localise.
+Two aliases that were implicit in the runner are now written down: HQAF borrows
+DIMKT's `difficulty_maps` dataset argument, and LPKT's `use_runtime_concepts`
+follows the resolved mode -- the flag that decides whether its initial knowledge
+state is a learned parameter or noise re-drawn every forward.
+
+Still deferred: `other_config_keys` is a blacklist that exists only because
+`model_kwargs` is built by dumping the whole model config and filtering it.
+Explicit `model_kwargs` would make it unnecessary, but removing it means
+touching every model constructor -- a separate change, and one whose equivalence
+diff would be too large to localise.
 
 ### Checking a move
 
@@ -310,10 +316,32 @@ and after:
 python research/check_input_refactor.py verify --models gkt --fold 0 --epochs 1
 ```
 
-Metrics are compared exactly; "close" is a failure, because a small drift means
-the RNG stream moved. `run_config.json` is diffed as a warning, where an
-unexplained difference usually means a `model_cfg` key was left behind. Run it
-per model -- batching five moves and failing does not say which one broke.
+Metrics are compared exactly, because a drift usually means the RNG stream
+moved. `run_config.json` is diffed as a warning, where an unexplained difference
+usually means a `model_cfg` key was left behind. Run it per model -- batching
+five moves and failing does not say which one broke.
+
+Exactness is not always reachable. `record --repeat 2` runs a model twice
+against itself and stores the spread as a per-metric tolerance; `dgekt` needs it,
+because `torch.sparse.mm` reduces with atomics on CUDA and two identical runs
+differ by ~2.4e-6 on AUC -- more than its migration did. Accuracy needs a
+separate floor from AUC: it thresholds at 0.5, so it moves in steps of 1/N as
+single predictions flip, and on a model whose AUC is near 0.5 the predictions
+sit on the threshold and accuracy stops being a usable signal at all.
+
+When output noise swamps the comparison, compare the inputs. Code motion means a
+spec must compute what the old chain computed, so building the artefact both ways
+settles it: `dgekt`'s hypergraph and both transition matrices came out
+element-for-element identical, maximum difference 0.000e+00.
+
+### Migration results
+
+| Model | Result |
+|---|---|
+| `simplekt` (control), `dimkt`, `hqaf` | bit-identical, `run_config` unchanged |
+| `dgekt` | graphs element-for-element identical; metrics within its own 2.4e-6 noise |
+| `gkt` | verified separately when it moved |
+| `dkt_forget`, `lpkt`, `hdkt`, `dkt_pebg`, `hawkes` | not run end to end -- `dkt_forget` and `lpkt`/`hdkt` need a `timestamps` column that assist2009's quelevel files do not have, `dkt_pebg` needs a booster embedding, `hawkes` needs `one_by_one` data. Covered by the contract suite and by construction |
 
 ## Model Contract Tests
 

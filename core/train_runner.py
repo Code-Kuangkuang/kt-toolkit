@@ -22,14 +22,6 @@ from core.run_support import (
     set_seed,
 )
 from datasets.init_dataset import protocol_stamp
-from datasets.lpkt_utils import generate_time2idx
-from datasets.feature_utils import (
-    compute_dkt_forget_stats,
-    compute_dimkt_difficulty_maps,
-    compute_hqaf_feature_maps,
-)
-from models.dgekt_utils import build_dgekt_graphs
-from strategies import apply_dkt_pebg_strategy
 
 
 MODEL_NAME_ALIASES = {
@@ -45,28 +37,6 @@ MODEL_NAME_ALIASES = {
     "hqaf-kt": "hqaf",
     "hqaf_kt": "hqaf",
 }
-QUESTION_REQUIRED_MODELS = {"atdkt", "dimkt", "stablekt", "sparsekt", "robustkt", "dtransformer", "rekt", "lefokt_akt", "hqaf", "keenkt", "dgekt", "lpkt", "hdkt"}
-ALL_IN_ONE_MODELS = {
-    "lpkt",
-    "hdkt",
-    "hd_dkt",
-    "hd_akt",
-    "hd_simplekt",
-    "atdkt",
-    "dimkt",
-    "stablekt",
-    "sparsekt",
-    "robustkt",
-    "dtransformer",
-    "dkt_forget",
-    "skvmn",
-    "rekt",
-    "lefokt_akt",
-    "hqaf",
-    "keenkt",
-    "dgekt",
-}
-ONE_BY_ONE_MODELS = {"hawkes"}
 
 
 def resolve_dataset_mode(model_name, train_cfg, model_cfg, overrides=None, spec=None):
@@ -77,14 +47,12 @@ def resolve_dataset_mode(model_name, train_cfg, model_cfg, overrides=None, spec=
       1. CLI override
       2. the model's config block
       3. the model's `Inputs.dataset_mode` declaration
-      4. the ALL_IN_ONE_MODELS / ONE_BY_ONE_MODELS sets, which the declaration
-         above is progressively replacing
-      5. the global training config
+      4. the global training config
 
-    The spec is consulted ahead of the membership sets so that a model moved to
-    an `Inputs` class stops depending on them. Passing `spec=None` keeps the
-    pre-migration behaviour, which is what callers that have not looked the
-    model up yet get.
+    This replaced two hand-maintained sets, ALL_IN_ONE_MODELS and
+    ONE_BY_ONE_MODELS. A model now states its own mode next to its code, so
+    adding one cannot silently miss a list, and `spec=None` simply falls through
+    to the global default.
 
     Public because the contract tests have to resolve the mode exactly as the
     runner does; picking a mode independently means testing a model in a
@@ -97,10 +65,6 @@ def resolve_dataset_mode(model_name, train_cfg, model_cfg, overrides=None, spec=
         mode = model_cfg["dataset_mode"]
     elif spec is not None and getattr(spec, "dataset_mode", None) is not None:
         mode = spec.dataset_mode
-    elif model_name in ALL_IN_ONE_MODELS:
-        mode = "all_in_one"
-    elif model_name in ONE_BY_ONE_MODELS:
-        mode = "one_by_one"
     else:
         mode = train_cfg.get("dataset_mode", "one_by_one")
     if mode not in {"one_by_one", "all_in_one"}:
@@ -238,22 +202,6 @@ def train_one_fold(
     model_cfg_local.update(spec_inputs.model_cfg_updates)
     dataset_cfg_local.update(spec_inputs.dataset_cfg_updates)
 
-    booster_info = None
-    if model_name == "dkt_pebg":
-        model_cfg_local, booster_info = apply_dkt_pebg_strategy(
-            model_cfg=model_cfg_local,
-            dataset_name=dataset_name,
-            dataset_cfg=dataset_cfg_local,
-            root_dir=root_dir,
-            fold_id=fold_id,
-        )
-        print(
-            "DKT-PEBG booster strategy resolved: "
-            f"strategy={booster_info.get('strategy')} "
-            f"enabled={booster_info.get('enabled')} "
-            f"emb_path={booster_info.get('emb_path', '')}"
-        )
-
     # Which splits this run's derived inputs were fitted from, recorded in the
     # protocol block. Set at the site that does the fitting rather than from a
     # lookup table, because a table drifts away from the code -- which is the
@@ -276,116 +224,8 @@ def train_one_fold(
     # table.
     pykt_transductive = bool(train_cfg_local.get("pykt_transductive", False))
 
-    lpkt_time_idx_maps = None
-    if model_name in {"lpkt", "hdkt"}:
-        train_time_folds = (
-            sorted(set(dataset_cfg_local.get("folds", [])) - {int(fold_id)})
-            if model_name == "hdkt" or resolved_dataset_mode == "all_in_one"
-            else None
-        )
-        at2idx, it2idx = generate_time2idx(
-            dataset_cfg_local, folds=train_time_folds
-        )
-        lpkt_time_idx_maps = {"at2idx": at2idx, "it2idx": it2idx}
-        dataset_cfg_local["num_at"] = len(at2idx) + 1
-        dataset_cfg_local["num_it"] = len(it2idx) + 1
-        model_cfg_local["num_at"] = dataset_cfg_local["num_at"]
-        model_cfg_local["num_it"] = dataset_cfg_local["num_it"]
-        if model_name == "hdkt" or resolved_dataset_mode == "all_in_one":
-            dataset_cfg_local["time_index_scope"] = "train_folds_only"
-            dataset_cfg_local["time_index_folds"] = train_time_folds
-            feature_fit_scope = "train_folds"
-        else:
-            # generate_time2idx with folds=None reads every split.
-            feature_fit_scope = "train_valid_test"
-    if model_name == "hawkes" and dataset_cfg_local.get("num_q", 0) <= 0:
-        raise ValueError(
-            f"Hawkes requires question ids, but dataset {dataset_name} has num_q={dataset_cfg_local.get('num_q')}."
-        )
-    if model_name in QUESTION_REQUIRED_MODELS and (
-        "questions" not in dataset_cfg_local.get("input_type", []) or dataset_cfg_local.get("num_q", 0) <= 0
-    ):
-        raise ValueError(
-            f"{model_name} requires question ids, but dataset {dataset_name} has "
-            f"input_type={dataset_cfg_local.get('input_type')} and num_q={dataset_cfg_local.get('num_q')}."
-        )
-    dimkt_difficulty_maps = None
-    hqaf_feature_maps = None
-    dkt_forget_caps = None
-    if model_name == "dkt_forget":
-        train_valid_key = "train_valid_file_quelevel" if train_cfg_local.get("dataset_mode") == "all_in_one" else "train_valid_file"
-        test_key = "test_file_quelevel" if train_cfg_local.get("dataset_mode") == "all_in_one" else "test_file"
-        gap_files = [
-            _resolve_existing_sequence_filename(dataset_cfg_local, train_valid_key, "train_valid_file"),
-            _resolve_existing_sequence_filename(dataset_cfg_local, test_key, "test_file"),
-        ]
-        gap_folds = None if pykt_transductive else sorted(
-            set(dataset_cfg_local.get("folds", [])) - {int(fold_id)}
-        )
-        gap_stats = compute_dkt_forget_stats(
-            dataset_cfg_local["dpath"],
-            gap_files,
-            dataset_cfg_local["input_type"],
-            folds=gap_folds,
-        )
-        feature_fit_scope = "train_valid_test" if pykt_transductive else "train_folds"
-        # The tables are sized from the training folds, so a longer gap in valid
-        # or test has to land on the reserved out-of-vocabulary row instead of
-        # indexing past the end.
-        dkt_forget_caps = None if pykt_transductive else dict(gap_stats)
-        model_cfg_local.update(gap_stats)
-        dataset_cfg_local.update(gap_stats)
-        model_cfg_local["use_timestamps"] = True
-    elif model_name == "dimkt":
-        difficult_levels = int(model_cfg_local.get("difficult_levels", model_cfg_local.get("diff_level", 100)))
-        model_cfg_local["difficult_levels"] = difficult_levels
-        model_cfg_local["batch_size"] = train_cfg_local["batch_size"]
-        model_cfg_local["num_steps"] = train_cfg_local.get("seq_len", 200)
-        train_folds = sorted(set(dataset_cfg_local.get("folds", [])) - {fold_id})
-        difficulty_file_key = "train_valid_file_quelevel" if train_cfg_local.get("dataset_mode") == "all_in_one" else "train_valid_file"
-        difficulty_file = _resolve_existing_sequence_filename(
-            dataset_cfg_local,
-            difficulty_file_key,
-            "train_valid_file",
-        )
-        feature_fit_scope = "train_folds"
-        dimkt_difficulty_maps = compute_dimkt_difficulty_maps(
-            dataset_cfg_local["dpath"],
-            difficulty_file,
-            difficult_levels,
-            folds=train_folds,
-        )
-    elif model_name == "hqaf":
-        diff_level = int(model_cfg_local.get("diff_level", model_cfg_local.get("difficult_levels", 50)))
-        num_time_bins = int(model_cfg_local.get("num_time_bins", 20))
-        model_cfg_local["diff_level"] = diff_level
-        model_cfg_local["num_time_bins"] = num_time_bins
-        model_cfg_local["num_type"] = int(dataset_cfg_local.get("num_type", model_cfg_local.get("num_type", 16)))
-        train_file_key = "train_valid_file_quelevel" if train_cfg_local.get("dataset_mode") == "all_in_one" else "train_valid_file"
-        train_folds = sorted(set(dataset_cfg_local.get("folds", [])) - {fold_id})
-        train_file = _resolve_existing_sequence_filename(
-            dataset_cfg_local,
-            train_file_key,
-            "train_valid_file",
-        )
-        feature_fit_scope = "train_folds"
-        hqaf_feature_maps = compute_hqaf_feature_maps(
-            dataset_cfg_local["dpath"],
-            train_file,
-            diff_level=diff_level,
-            num_time_bins=num_time_bins,
-            folds=train_folds,
-        )
-        if not hqaf_feature_maps.get("has_usetimes", False):
-            print("Warning: HQAF source data has no 'usetimes' column; using default time bucket 0.")
-        if not hqaf_feature_maps.get("has_type", False):
-            print("Warning: HQAF source data has no 'type' column; using default question type 0.")
-        dimkt_difficulty_maps = {
-            "skills": hqaf_feature_maps.get("skills", {}),
-            "questions": hqaf_feature_maps.get("questions", {}),
-        }
-
-    dgekt_graph_info = None
+    # Migrated: every model that derives inputs now declares them in its own
+    # `Inputs` spec, applied above. What remains below is the generic path.
 
     # Filter out learning_rate and other_config parameters for model
     other_config_keys = {"loss_c_all_lambda", "loss_q_all_lambda", "loss_c_next_lambda", "loss_q_next_lambda",
@@ -398,71 +238,13 @@ def train_one_fold(
                            # Routed to the dataset builder, not the model.
                            "concept_mode", "eval_window"}
     model_kwargs = {k: v for k, v in model_cfg_local.items() if k not in other_config_keys}
-    if model_name == "lpkt":
-        model_kwargs["use_runtime_concepts"] = resolved_dataset_mode == "all_in_one"
-    if model_name in {"simplekt", "ukt", "stablekt", "sparsekt", "robustkt", "dtransformer", "lefokt_akt", "hqaf"}:
-        model_kwargs.setdefault("num_pid", dataset_cfg_local.get("num_q", 0))
-    if model_name == "hqaf":
-        model_kwargs.setdefault("num_type", dataset_cfg_local.get("num_type", model_cfg_local.get("num_type", 16)))
-    # Migrated to models/gkt.py::GKT.Inputs.
-    if model_name == "dgekt":
-        if "concepts" not in dataset_cfg_local.get("input_type", []):
-            raise ValueError(
-                f"DGEKT requires question-concept associations, but dataset {dataset_name} "
-                f"has input_type={dataset_cfg_local.get('input_type')}."
-            )
-        graph_file_key = (
-            "train_valid_file_quelevel"
-            if train_cfg_local.get("dataset_mode") == "all_in_one"
-            else "train_valid_file"
-        )
-        graph_file = _resolve_existing_sequence_filename(
-            dataset_cfg_local, graph_file_key, "train_valid_file"
-        )
-        test_graph_file_key = (
-            "test_file_quelevel"
-            if train_cfg_local.get("dataset_mode") == "all_in_one"
-            else "test_file"
-        )
-        test_graph_file = _resolve_existing_sequence_filename(
-            dataset_cfg_local, test_graph_file_key, "test_file"
-        )
-        association_files = []
-        include_test_metadata = model_cfg_local.get(
-            "include_test_question_metadata", pykt_transductive
-        )
-        if include_test_metadata and test_graph_file and os.path.exists(
-            os.path.join(dataset_cfg_local["dpath"], test_graph_file)
-        ):
-            association_files.append(test_graph_file)
-        train_folds = sorted(set(dataset_cfg_local.get("folds", [])) - {int(fold_id)})
-        # The hypergraph itself is counted from the training folds, but
-        # association_files above adds the test file's question-concept pairs
-        # whenever include_test_question_metadata is on, which is the default.
-        graph_scope = "train_valid_test" if association_files else "train_folds"
-        hypergraph, transition_out, transition_in, dgekt_graph_info = build_dgekt_graphs(
-            dataset_cfg_local["dpath"],
-            graph_file,
-            num_q=dataset_cfg_local["num_q"],
-            num_c=dataset_cfg_local["num_c"],
-            train_folds=train_folds,
-            association_files=association_files,
-        )
-        model_kwargs.update(
-            {
-                "hypergraph": hypergraph,
-                "transition_out": transition_out,
-                "transition_in": transition_in,
-            }
-        )
-
     # Applied last so a spec wins over the legacy chain during the migration.
     model_kwargs.update(spec_inputs.model_kwargs)
-    # A spec reports its own fit scope the same way it reports everything else.
-    feature_fit_scope = spec_inputs.run_config_extras.pop(
-        "feature_fit_scope", feature_fit_scope
-    )
-    graph_scope = spec_inputs.run_config_extras.pop("graph_scope", graph_scope)
+    # A spec reports its own fit scope; `None` means it has nothing to declare.
+    if spec_inputs.feature_fit_scope is not None:
+        feature_fit_scope = spec_inputs.feature_fit_scope
+    if spec_inputs.graph_scope is not None:
+        graph_scope = spec_inputs.graph_scope
 
     # Every spec has run by now, so the RNG stream from here on is identical to
     # what it was before the migration. Nothing below may consume randomness
@@ -489,10 +271,8 @@ def train_one_fold(
         **model_kwargs,
     ).to(device)
 
-    # Apply weight init for specific models (same as pykt)
-    if model_name == "hawkes":
-        model.apply(model.init_weights)
-        model = model.double()
+    # Hawkes applies its own init and runs in double precision; that is the only
+    # post-construction work any model needs, and it lives in its spec.
     model = spec.post_build(model, spec_ctx)
 
     # Resolve timestamp loading before any run overview/logging.
@@ -504,12 +284,6 @@ def train_one_fold(
     # Get dataset_mode from overrides (if specified)
     dataset_mode = train_cfg_local.get("dataset_mode")
     dataset_feature_kwargs = {
-        "include_dkt_forget": model_name == "dkt_forget",
-        "dkt_forget_caps": dkt_forget_caps,
-        "difficulty_maps": dimkt_difficulty_maps,
-        "include_history": model_name == "atdkt" and "his" in resolved_emb_type,
-        "include_hqaf_attrs": model_name == "hqaf",
-        "hqaf_feature_maps": hqaf_feature_maps,
         # Optional `concept_mode` in the model's config block forces multi/first
         # instead of taking it from MULTI_CONCEPT_MODELS, so the cost of
         # truncation can be measured without editing code.
@@ -526,7 +300,6 @@ def train_one_fold(
         model_name=model_name,
         dataset_mode=dataset_mode,
         use_timestamps=use_timestamps,
-        time_idx_maps=lpkt_time_idx_maps,
         train_label_flip_ratio=train_label_flip_ratio,
         train_label_flip_seed=train_label_flip_seed,
         **dataset_feature_kwargs,
@@ -591,7 +364,6 @@ def train_one_fold(
                 model_name=model_name,
                 dataset_mode=dataset_mode,
                 use_timestamps=use_timestamps,
-                time_idx_maps=lpkt_time_idx_maps,
                 **dataset_feature_kwargs,
             )
             print(f"Test loader built from: {test_path}")
@@ -646,7 +418,6 @@ def train_one_fold(
                 model_name=model_name,
                 dataset_mode=dataset_mode,
                 use_timestamps=use_timestamps,
-                time_idx_maps=lpkt_time_idx_maps,
                 window=True,
                 **dataset_feature_kwargs,
             )
@@ -713,8 +484,7 @@ def train_one_fold(
         "train_config": train_cfg_local,
         "model_config": model_cfg_local,
         "dataset_config": dataset_cfg_local,
-        "dgekt_graph": dgekt_graph_info,
-        "booster_info": booster_info,
+        # dgekt_graph and booster_info arrive here from their specs.
         **spec_inputs.run_config_extras,
         "wandb": {
             "enabled": bool(wandb_cfg),

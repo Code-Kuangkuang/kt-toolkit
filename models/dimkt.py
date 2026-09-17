@@ -4,11 +4,47 @@ from torch.autograd import Variable
 import torch
 import torch.nn as nn
 
+from core.model_inputs import InputSpec, ModelInputs
 from core.registry import MODEL_REGISTRY
 from .multi_concept import pool_concept_embeddings
 
 @MODEL_REGISTRY.register("dimkt")
 class DIMKT(Module):
+    class Inputs(InputSpec):
+        """Per-skill and per-question difficulty levels, binned from responses.
+
+        Already fold-clean before the migration: the maps come from the current
+        fold's training rows only.
+        """
+
+        dataset_mode = "all_in_one"
+        requires_question_ids = True
+
+        @classmethod
+        def prepare(cls, ctx):
+            from datasets.feature_utils import compute_dimkt_difficulty_maps
+
+            levels = int(ctx.model_cfg.get(
+                "difficult_levels", ctx.model_cfg.get("diff_level", 100)
+            ))
+            maps = compute_dimkt_difficulty_maps(
+                ctx.dataset_cfg["dpath"],
+                ctx.resolve_file(ctx.quelevel_key("train_valid_file"), "train_valid_file"),
+                levels,
+                folds=ctx.train_folds(),
+            )
+            return ModelInputs(
+                model_cfg_updates={
+                    "difficult_levels": levels,
+                    # DIMKT allocates fixed-size buffers, so it needs the batch
+                    # and sequence shape at construction time.
+                    "batch_size": ctx.train_cfg["batch_size"],
+                    "num_steps": ctx.train_cfg.get("seq_len", 200),
+                },
+                dataset_kwargs={"difficulty_maps": maps},
+                feature_fit_scope="train_folds",
+            )
+
     def __init__(self,num_q,num_c,dropout=0.2,emb_size=128,batch_size=64,num_steps=200,difficult_levels=100,emb_type="qid",emb_path="", **kwargs):
         super().__init__()
         self.model_name = "dimkt"

@@ -7,6 +7,7 @@ from torch import nn
 from torch.nn.init import xavier_uniform_
 import torch.nn.functional as F
 
+from core.model_inputs import InputSpec, ModelInputs
 from core.registry import MODEL_REGISTRY
 from .multi_concept import pool_concept_embeddings
 
@@ -20,6 +21,60 @@ class Dim(IntEnum):
 @MODEL_REGISTRY.register("hqaf")
 @MODEL_REGISTRY.register("hqaf_kt")
 class HQAFKT(nn.Module):
+    class Inputs(InputSpec):
+        """Difficulty, response-time and question-type attributes.
+
+        The difficulty half rides DIMKT's `difficulty_maps` dataset argument.
+        That aliasing was implicit in the runner; it is spelled out here.
+        """
+
+        dataset_mode = "all_in_one"
+        requires_question_ids = True
+        needs_num_pid = True
+
+        @classmethod
+        def prepare(cls, ctx):
+            from datasets.feature_utils import compute_hqaf_feature_maps
+
+            diff_level = int(ctx.model_cfg.get(
+                "diff_level", ctx.model_cfg.get("difficult_levels", 50)
+            ))
+            num_time_bins = int(ctx.model_cfg.get("num_time_bins", 20))
+            num_type = int(ctx.dataset_cfg.get(
+                "num_type", ctx.model_cfg.get("num_type", 16)
+            ))
+            maps = compute_hqaf_feature_maps(
+                ctx.dataset_cfg["dpath"],
+                ctx.resolve_file(ctx.quelevel_key("train_valid_file"), "train_valid_file"),
+                diff_level=diff_level,
+                num_time_bins=num_time_bins,
+                folds=ctx.train_folds(),
+            )
+            if not maps.get("has_usetimes", False):
+                print("Warning: HQAF source data has no 'usetimes' column; using default time bucket 0.")
+            if not maps.get("has_type", False):
+                print("Warning: HQAF source data has no 'type' column; using default question type 0.")
+
+            inputs = super().prepare(ctx)  # supplies num_pid
+            inputs.model_kwargs["num_type"] = num_type
+            inputs.model_cfg_updates.update({
+                "diff_level": diff_level,
+                "num_time_bins": num_time_bins,
+                "num_type": num_type,
+            })
+            inputs.dataset_kwargs.update({
+                "include_hqaf_attrs": True,
+                "hqaf_feature_maps": maps,
+                # HQAF has no difficulty channel of its own; it borrows the one
+                # DIMKT established.
+                "difficulty_maps": {
+                    "skills": maps.get("skills", {}),
+                    "questions": maps.get("questions", {}),
+                },
+            })
+            inputs.feature_fit_scope = "train_folds"
+            return inputs
+
     def __init__(
         self,
         n_question=None,

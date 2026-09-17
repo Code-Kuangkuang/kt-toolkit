@@ -8,6 +8,7 @@ from enum import IntEnum
 import numpy as np
 import math 
 
+from core.model_inputs import InputSpec
 from core.registry import MODEL_REGISTRY
 from .multi_concept import pool_concept_embeddings, pool_interaction_embeddings
 
@@ -654,6 +655,13 @@ class RotaryPositionalEmbeddings(nn.Module):
 
 @MODEL_REGISTRY.register("stablekt")
 class StableKT(stableKT):
+    class Inputs(InputSpec):
+        """Declares what this model needs; it derives nothing from the data."""
+
+        dataset_mode = "all_in_one"
+        requires_question_ids = True
+        needs_num_pid = True
+
     def __init__(
         self,
         num_c,

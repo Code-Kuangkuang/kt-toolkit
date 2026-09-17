@@ -4,6 +4,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from core.model_inputs import InputSpec, ModelInputs
 from core.registry import MODEL_REGISTRY
 
 
@@ -78,6 +79,63 @@ class TwoLayerHypergraphEncoder(nn.Module):
 
 @MODEL_REGISTRY.register("dgekt")
 class DGEKT(nn.Module):
+    class Inputs(InputSpec):
+        """A question-concept hypergraph plus two transition matrices.
+
+        The hypergraph is counted from the training folds. Test question-concept
+        metadata is added only under `pykt_transductive`, which is what makes the
+        run transductive; nothing here reads a response.
+        """
+
+        dataset_mode = "all_in_one"
+        requires_question_ids = True
+
+        @classmethod
+        def validate(cls, ctx):
+            super().validate(ctx)
+            if "concepts" not in ctx.dataset_cfg.get("input_type", []):
+                raise ValueError(
+                    "DGEKT requires question-concept associations, but dataset "
+                    f"{ctx.dataset_name} has input_type={ctx.dataset_cfg.get('input_type')}."
+                )
+
+        @classmethod
+        def prepare(cls, ctx):
+            import os
+
+            from models.dgekt_utils import build_dgekt_graphs
+
+            transductive = bool(ctx.train_cfg.get("pykt_transductive", False))
+            graph_file = ctx.resolve_file(
+                ctx.quelevel_key("train_valid_file"), "train_valid_file"
+            )
+            test_file = ctx.resolve_file(ctx.quelevel_key("test_file"), "test_file")
+
+            association_files = []
+            if ctx.model_cfg.get("include_test_question_metadata", transductive):
+                if test_file and os.path.exists(
+                    os.path.join(ctx.dataset_cfg["dpath"], test_file)
+                ):
+                    association_files.append(test_file)
+
+            hypergraph, out_m, in_m, info = build_dgekt_graphs(
+                ctx.dataset_cfg["dpath"],
+                graph_file,
+                num_q=ctx.dataset_cfg["num_q"],
+                num_c=ctx.dataset_cfg["num_c"],
+                train_folds=ctx.train_folds(),
+                association_files=association_files,
+            )
+            return ModelInputs(
+                model_kwargs={
+                    "hypergraph": hypergraph,
+                    "transition_out": out_m,
+                    "transition_in": in_m,
+                },
+                run_config_extras={"dgekt_graph": info},
+                graph_scope="train_valid_test" if association_files else "train_folds",
+            )
+
     """Dual Graph Ensemble Knowledge Tracing.
 
     The two response-conditioned question graphs encode concept association

@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 import numpy as np
+from core.model_inputs import InputSpec
 from core.registry import MODEL_REGISTRY
 from .multi_concept import pool_concept_embeddings, pool_interaction_embeddings
 
@@ -15,6 +16,11 @@ class Dim:
 
 @MODEL_REGISTRY.register("simplekt")
 class SimpleKT(nn.Module):
+    class Inputs(InputSpec):
+        """Declares what this model needs; it derives nothing from the data."""
+
+        needs_num_pid = True
+
     def __init__(
         self,
         num_c,

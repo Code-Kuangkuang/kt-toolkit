@@ -9,6 +9,7 @@ import numpy as np
 from torch.nn.parameter import Parameter
 from einops import rearrange
 
+from core.model_inputs import InputSpec
 from core.registry import MODEL_REGISTRY
 from .multi_concept import pool_concept_embeddings, pool_interaction_embeddings
 
@@ -20,6 +21,13 @@ class Dim(IntEnum):
 @MODEL_REGISTRY.register("lefokt")
 @MODEL_REGISTRY.register("lefokt_akt")
 class LEFOKT_AKT(nn.Module):
+    class Inputs(InputSpec):
+        """Declares what this model needs; it derives nothing from the data."""
+
+        dataset_mode = "all_in_one"
+        requires_question_ids = True
+        needs_num_pid = True
+
     def __init__(
         self,
         n_question=None,
