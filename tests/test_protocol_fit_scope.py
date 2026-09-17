@@ -52,16 +52,72 @@ class ProtocolStampTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             protocol_stamp("dkt", "all_in_one", 4, graph_scope="everything")
 
-    def test_the_existing_fields_are_untouched(self):
-        """Adding fields must not disturb the ones run_baseline_table groups on.
-
-        scripts/run_baseline_table.py::protocol_key reads five keys by name, so
-        older runs missing the new fields still group with newer ones.
-        """
+    def test_the_stamp_carries_every_field_the_key_groups_on(self):
         stamp = protocol_stamp("dkt", "all_in_one", 4)
         for key in ("dataset_mode", "concept_mode", "max_concepts",
-                    "concepts_visible", "score_repeated_kc", "eval_window"):
+                    "concepts_visible", "score_repeated_kc", "eval_window",
+                    "feature_fit_scope", "graph_scope"):
             self.assertIn(key, stamp)
+
+
+class ProtocolKeyTest(unittest.TestCase):
+    """A field recorded but not grouped on is decorative.
+
+    The first version of protocol_key read five of the eight fields, so a
+    `train_folds` run and a `train_valid_test` run still landed in the same
+    table -- the scope sat in the artifact and changed nothing.
+    """
+
+    def _key(self, **overrides):
+        from scripts.run_baseline_table import protocol_key
+
+        protocol = protocol_stamp("dkt", "all_in_one", 4)
+        protocol.update(overrides)
+        return protocol_key({"protocol": protocol})
+
+    def test_differing_feature_scope_does_not_group_together(self):
+        self.assertNotEqual(
+            self._key(feature_fit_scope="train_folds"),
+            self._key(feature_fit_scope="train_valid_test"),
+        )
+
+    def test_differing_graph_scope_does_not_group_together(self):
+        self.assertNotEqual(
+            self._key(graph_scope="none"),
+            self._key(graph_scope="train_valid_test"),
+        )
+
+    def test_differing_max_concepts_does_not_group_together(self):
+        self.assertNotEqual(self._key(max_concepts=4), self._key(max_concepts=7))
+
+    def test_identical_protocols_do_group_together(self):
+        self.assertEqual(self._key(), self._key())
+
+    def test_a_run_predating_a_field_is_unknown_not_compatible(self):
+        """An older artifact recorded nothing; it must not be assumed to match.
+
+        Defaulting a missing scope to `train_folds` would silently merge runs
+        whose scope nobody recorded into a table of runs that did record it.
+        """
+        from scripts.run_baseline_table import protocol_key
+
+        old = protocol_stamp("dkt", "all_in_one", 4)
+        del old["feature_fit_scope"]
+        del old["graph_scope"]
+
+        self.assertNotEqual(protocol_key({"protocol": old}), self._key())
+        self.assertIn("unknown", protocol_key({"protocol": old}))
+
+    def test_a_run_with_no_protocol_block_is_still_unplaceable(self):
+        from scripts.run_baseline_table import protocol_key
+
+        self.assertIsNone(protocol_key({}))
+
+    def test_describe_names_a_transductive_run(self):
+        from scripts.run_baseline_table import describe_protocol
+
+        text = describe_protocol(self._key(graph_scope="train_valid_test"))
+        self.assertIn("transductive", text)
 
     def test_every_scope_name_is_accepted(self):
         for scope in FIT_SCOPES:

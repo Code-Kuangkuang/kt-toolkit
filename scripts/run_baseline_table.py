@@ -98,24 +98,51 @@ def train_one(dataset, model, fold, seed, save_root, extra_args, log_dir):
 
 
 def protocol_key(config):
+    """Group runs by every field of the protocol block, not a subset.
+
+    A field recorded but not grouped on is decorative: `feature_fit_scope` would
+    sit in the artifact while a `train_folds` run and a `train_valid_test` run
+    landed in the same table anyway. The key therefore covers all eight fields.
+
+    Missing fields become "unknown" rather than a default. A run produced before
+    a field existed did not record it, and assuming it matches a current run is
+    the assumption this whole mechanism exists to stop making -- the same
+    reasoning that already refuses a run with no protocol block at all.
+    """
     p = config.get("protocol")
     if not p:
         # Runs from before the protocol stamp existed cannot be placed in a
         # table, because there is no way to tell what protocol produced them.
         return None
+
+    def field(name, default="unknown"):
+        value = p.get(name)
+        return default if value is None else value
+
     return (
-        p.get("dataset_mode"), p.get("concept_mode"), p.get("concepts_visible"),
-        bool(p.get("score_repeated_kc")), bool(p.get("eval_window", True)),
+        field("dataset_mode"),
+        field("concept_mode"),
+        field("concepts_visible"),
+        field("max_concepts"),
+        bool(p.get("score_repeated_kc")),
+        bool(p.get("eval_window", True)),
+        field("feature_fit_scope"),
+        field("graph_scope"),
     )
 
 
 def describe_protocol(key):
-    mode, concept, visible, repeated, window = key
-    parts = [f"{mode}/{concept}", f"concepts={visible}"]
+    mode, concept, visible, width, repeated, window, feature_scope, graph_scope = key
+    parts = [f"{mode}/{concept}", f"concepts={visible}", f"max_concepts={width}"]
     if repeated:
         parts.append("**score_repeated_kc=TRUE (leaky)**")
     if not window:
         parts.append("**no windowed metric**")
+    for label, scope in (("features", feature_scope), ("graph", graph_scope)):
+        if scope == "train_valid_test":
+            parts.append(f"**{label} fitted on test too (transductive)**")
+        elif scope == "unknown":
+            parts.append(f"**{label} scope unrecorded**")
     return ", ".join(parts)
 
 

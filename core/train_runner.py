@@ -549,7 +549,13 @@ def train_one_fold(
             "AAAI2023 test evaluation disabled: pykt_test.csv contains hidden "
             "targets marked as -1. Use scripts/predict_aaai2023.py to generate prediction.csv."
         )
-    elif test_filename and os.path.exists(test_path):
+    elif not test_filename or not os.path.exists(test_path):
+        # A missing file used to fall through this branch and skip the loader
+        # without a word, which is the same silent outcome as a build failure.
+        test_loader = _loader_failed(
+            "test", FileNotFoundError(f"no test sequence file at {test_path}")
+        )
+    else:
         try:
             test_loader = build_dataset(
                 "kt_test",
@@ -588,7 +594,23 @@ def train_one_fold(
     window_path = os.path.join(dataset_cfg_local["dpath"], window_filename or "")
     if not eval_window:
         print("Windowed test evaluation disabled for this model (eval_window=false).")
-    elif test_loader is not None and window_filename and os.path.exists(window_path):
+    elif test_loader is None:
+        # Only reachable with allow_missing_test_loader, or on a hidden-label
+        # dataset, both of which already explained themselves.
+        pass
+    elif not window_filename or not os.path.exists(window_path):
+        # `eval_window` goes into the protocol block, so skipping quietly here
+        # produces a run that claims a pyKT-comparable windowed metric and does
+        # not have one. Either the file exists or the claim is withdrawn.
+        window_test_loader = _loader_failed(
+            "windowed test",
+            FileNotFoundError(
+                f"no windowed test file at {window_path}. Generate it, or set "
+                "`eval_window: false` so the protocol block stops claiming a "
+                "windowed metric for this run."
+            ),
+        )
+    else:
         try:
             window_test_loader = build_dataset(
                 "kt_test",
@@ -605,6 +627,18 @@ def train_one_fold(
             print(f"Windowed test loader built from: {window_path}")
         except Exception as e:
             window_test_loader = _loader_failed("windowed test", e)
+
+    # The protocol block must describe what happened, not what was asked for.
+    # With allow_missing_test_loader set, a run can reach here having wanted a
+    # windowed metric and not got one; recording eval_window=true then would put
+    # it in the same table group as runs that have the number.
+    if eval_window and window_test_loader is None:
+        print(
+            "No windowed test loader was built, so this run records "
+            "eval_window=false and has no pyKT-comparable number."
+        )
+        eval_window = False
+        train_cfg_local["eval_window"] = False
 
     opt = build_optimizer(train_cfg_local, model_cfg_local, model)
 

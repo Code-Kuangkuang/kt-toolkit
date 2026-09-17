@@ -140,10 +140,19 @@ The value is set at the site that does the fitting, not from a lookup table,
 because a table drifts from the code. A model that has moved to an `Inputs` spec
 reports its own through `run_config_extras`, as `gkt` does.
 
-`datasets/init_dataset.py::protocol_stamp` builds it. Before putting two runs in
-the same table, check that their `protocol` blocks are identical --
-`docs/evaluation_protocol.md` records what happens when they are not, including
-the measured cost of KC truncation and of scoring repeated KC rows.
+`datasets/init_dataset.py::protocol_stamp` builds it, and
+`scripts/run_baseline_table.py::protocol_key` groups on **all eight fields**. A
+field that is recorded but not grouped on is decorative: it sits in the artifact
+while runs with different values still land in the same table. A field missing
+from an older artifact becomes `unknown` rather than a default, since a run that
+recorded nothing must not be assumed to match one that did.
+
+`docs/evaluation_protocol.md` records what happens when blocks do not match,
+including the measured cost of KC truncation and of scoring repeated KC rows.
+
+`eval_window` describes what happened, not what was requested: a run that wanted
+a windowed metric and could not build the loader records `false`, so it cannot
+group with runs that have the number.
 
 Both test metrics are reported: `best_test_auc` on the ordinary split and
 `best_window_test_auc` on the windowed split, the latter being the
@@ -156,12 +165,13 @@ because a number you can watch is a number you can tune against, and the banner
 does not change what a person does with it. The canonical selection metric is
 validation AUC.
 
-A test or windowed-test loader that fails to build stops the run. It used to
-print a warning and continue, which meant the fold finished looking successful
-with no test metric and then dropped out of the cross-validation mean --
-visible now that `aggregate_fold_metrics` reports a short count, but better not
-to happen. `allow_missing_test_loader: true` in the training config restores the
-warn-and-continue behaviour where it is genuinely expected.
+A test or windowed-test loader that cannot be used stops the run -- whether it
+failed to build or its file is simply absent. Both used to end the same way:
+the fold finished looking successful with no test metric and then dropped out of
+the cross-validation mean. A missing file was the quieter of the two, because it
+never reached an exception handler at all.
+`allow_missing_test_loader: true` in the training config restores
+warn-and-continue where it is genuinely expected.
 
 The last-epoch checkpoint is also scored, but only when `eval_last_epoch: true`
 is set in the training config. It answers a diagnostic question -- how far the
