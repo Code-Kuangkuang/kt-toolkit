@@ -127,6 +127,13 @@ because a number you can watch is a number you can tune against, and the banner
 does not change what a person does with it. The canonical selection metric is
 validation AUC.
 
+A test or windowed-test loader that fails to build stops the run. It used to
+print a warning and continue, which meant the fold finished looking successful
+with no test metric and then dropped out of the cross-validation mean --
+visible now that `aggregate_fold_metrics` reports a short count, but better not
+to happen. `allow_missing_test_loader: true` in the training config restores the
+warn-and-continue behaviour where it is genuinely expected.
+
 The last-epoch checkpoint is also scored, but only when `eval_last_epoch: true`
 is set in the training config. It answers a diagnostic question -- how far the
 model drifted after its best validation epoch -- and is not a reportable result,
@@ -333,11 +340,33 @@ reading the resulting model-side error:
 The last two are the same lesson: anything the runner or the loader decides has
 to be asked for, not reproduced.
 
-Thirteen model files hold a module-level
-`device = torch.device("cuda" if torch.cuda.is_available() else "cpu")` and use
-it instead of the device passed in, so on a machine with a GPU they cannot run on
-CPU. That blocks a CPU-only CI job and is the reason the contract tests run on
-whichever device the runner would use.
+### Device handling
+
+A model must run on the device it is given. Thirteen files hold a module-level
+`device = torch.device("cuda" if torch.cuda.is_available() else "cpu")`, and
+several reached for it instead of the argument, so on a machine with a GPU they
+could not be forced onto CPU at all.
+
+Fixed:
+
+- `models/utils.py` and `models/atkt.py`: `ut_mask` and `pos_encode` now take
+  `target_device`, matching the convention `models/saint.py` already used. The
+  two call sites pass the device of a tensor they already hold.
+- `models/iekt.py`: `IEKT.__init__` had no `device` parameter at all, so
+  `build_model`'s signature filter dropped the argument, and the constructor
+  then rebuilt `device` from a fresh `torch.cuda.is_available()` check. Beyond
+  blocking CPU, that silently ignored `--gpu_id`: `cuda:1` still built on
+  `cuda:0`.
+
+`test_4b_a_model_built_on_cpu_stays_on_cpu` pins this. It is skipped when no GPU
+is present, where the module-level default happens to be right and the test
+would prove nothing. All 31 exercised models now pass on both CPU and CUDA.
+
+Still present, not yet a defect: `dtransformer`, `robustkt`, `sparsekt` and
+`stablekt` open their forward with `global device; device = q.device`, rebinding
+the module global from the input. It gives the right answer and is not
+thread-safe; converting it to a local is mechanical but touches up to eighteen
+sites in one file, so it is left for a change that can be checked on its own.
 
 ## Common Risks
 

@@ -93,7 +93,7 @@ class ATDKT(Module):
         # cemb = self.concept_emb(c)
         # catemb = cemb
         if emb_type.find("trans") != -1:
-            mask = ut_mask(seq_len = catemb.shape[1])
+            mask = ut_mask(seq_len=catemb.shape[1], target_device=catemb.device)
             qh = self.trans(catemb.transpose(0,1), mask).transpose(0,1)
         else:
             qh, _ = self.qlstm(catemb)

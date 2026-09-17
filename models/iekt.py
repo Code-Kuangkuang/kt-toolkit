@@ -301,6 +301,7 @@ class IEKT(nn.Module):
         emb_type='qc_merge',
         emb_path="",
         pretrain_dim=768,
+        device='cpu',
         **kwargs,
     ):
         super().__init__()
@@ -317,8 +318,12 @@ class IEKT(nn.Module):
         self.gamma = gamma
         self.emb_type = emb_type
 
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.device = device
+        # Use the device the caller asked for. This used to overwrite the
+        # `device` argument with a fresh torch.cuda.is_available() check, which
+        # discarded it entirely: --gpu_id 1 still built on cuda:0, and a model
+        # explicitly constructed on CPU put its tensors on CUDA and died on the
+        # first index.
+        self.device = torch.device(device) if isinstance(device, str) else device
 
         self.model = IEKTNet(
             num_q=num_q,

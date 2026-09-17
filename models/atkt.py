@@ -80,7 +80,7 @@ class ATKT(nn.Module):
 
         if self.fix:
             # Fixed attention with causal mask
-            attn_mask = ut_mask(lstm_output.shape[1])
+            attn_mask = ut_mask(lstm_output.shape[1], target_device=lstm_output.device)
             att_w = att_w.transpose(1, 2).expand(
                 lstm_output.shape[0], lstm_output.shape[1], lstm_output.shape[1]
             ).clone()
@@ -145,6 +145,11 @@ class ATKT(nn.Module):
         return res, skill_answer_embedding
 
 
-def ut_mask(seq_len):
-    """Upper triangular mask for causal attention."""
-    return torch.triu(torch.ones(seq_len, seq_len), diagonal=1).to(dtype=torch.bool).to(device)
+def ut_mask(seq_len, target_device=None):
+    """Upper triangular mask for causal attention.
+
+    See models/utils.py::ut_mask -- the module-level `device` fallback is fixed
+    at import time and ignores where the model was actually built.
+    """
+    target_device = target_device or device
+    return torch.triu(torch.ones(seq_len, seq_len), diagonal=1).to(dtype=torch.bool).to(target_device)

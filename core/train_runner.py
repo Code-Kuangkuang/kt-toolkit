@@ -482,6 +482,30 @@ def train_one_fold(
     )
     train_label_flip_info = train_loader.dataset.label_flip_info
 
+    # A loader that fails to build used to print a warning and continue, which
+    # meant the run finished with no test metric while looking successful. That
+    # fold then dropped out of the cross-validation mean, which is exactly the
+    # partial-average problem `aggregate_fold_metrics` now reports -- but a
+    # visible shortfall is second best to not having one. Failing here costs a
+    # rerun; not failing costs a table that is quietly four folds wide.
+    #
+    # `allow_missing_test_loader: true` in the training config restores the old
+    # behaviour for the case where it is genuinely expected.
+    allow_missing_test = bool(train_cfg_local.get("allow_missing_test_loader", False))
+
+    def _loader_failed(kind, exc):
+        if allow_missing_test:
+            print(f"Warning: could not build the {kind} loader, continuing without it: {exc}")
+            return None
+        raise RuntimeError(
+            f"Could not build the {kind} loader for {dataset_name} "
+            f"{model_name} fold {fold_id}: {exc}\n"
+            "This run would finish with no test metric and silently narrow any "
+            "cross-validation mean it feeds. Set "
+            "`allow_missing_test_loader: true` in the training config if that is "
+            "genuinely expected here."
+        ) from exc
+
     # Build test dataloader if data exists. AAAI2023's official test file has
     # hidden targets marked as -1, so it is for prediction/submission only.
     test_loader = None
@@ -515,8 +539,7 @@ def train_one_fold(
             )
             print(f"Test loader built from: {test_path}")
         except Exception as e:
-            print(f"Warning: Could not build test loader: {e}")
-            test_loader = None
+            test_loader = _loader_failed("test", e)
 
     # The windowed test file is what pykt reports on: one row per position, each
     # with a full-length history, instead of non-overlapping chunks that leave
@@ -556,8 +579,7 @@ def train_one_fold(
             )
             print(f"Windowed test loader built from: {window_path}")
         except Exception as e:
-            print(f"Warning: Could not build windowed test loader: {e}")
-            window_test_loader = None
+            window_test_loader = _loader_failed("windowed test", e)
 
     opt = build_optimizer(train_cfg_local, model_cfg_local, model)
 

@@ -88,9 +88,38 @@ class GKT(nn.Module):
     class Inputs(InputSpec):
         """GKT needs a concept-transition graph, which the loaders do not build.
 
-        Cached next to the data as `gkt_graph_<type>.npz`; `get_gkt_graph`
-        writes that file itself on a miss.
+        Cached next to the data; `get_gkt_graph` writes the file on a miss.
+
+        The cache name used to be `gkt_graph_<type>.npz`, which names the graph
+        type and nothing else. With `graph_type: transition` -- the configured
+        default -- the matrix is counted from the sequence files, so regenerating
+        a dataset (changing `keep_scaffolding`, say, or re-running run_clean.py)
+        leaves a graph built from the old data sitting in the same path, and it
+        is reused without a word. The name now carries a fingerprint of the
+        source files, so a stale graph misses instead of lying.
         """
+
+        @classmethod
+        def _source_fingerprint(cls, dpath, filenames):
+            """Short digest of the files the graph is counted from.
+
+            Path, size and mtime -- enough to notice a regenerated dataset
+            without reading gigabytes to hash the contents.
+            """
+            import hashlib
+            import os
+
+            parts = []
+            for name in filenames:
+                if not name:
+                    continue
+                path = os.path.join(dpath, name)
+                try:
+                    stat = os.stat(path)
+                    parts.append(f"{name}:{stat.st_size}:{int(stat.st_mtime)}")
+                except OSError:
+                    parts.append(f"{name}:missing")
+            return hashlib.sha256("|".join(parts).encode()).hexdigest()[:12]
 
         @classmethod
         def prepare(cls, ctx):
@@ -102,21 +131,31 @@ class GKT(nn.Module):
             from models.gkt_utils import get_gkt_graph
 
             graph_type = ctx.model_cfg.get("graph_type", "dense")
-            graph_file = f"gkt_graph_{graph_type}.npz"
-            graph_path = os.path.join(ctx.dataset_cfg["dpath"], graph_file)
+            train_file = ctx.dataset_cfg.get(
+                "train_valid_original_file", ctx.dataset_cfg.get("train_valid_file")
+            )
+            test_file = ctx.dataset_cfg.get(
+                "test_original_file", ctx.dataset_cfg.get("test_file")
+            )
+            dpath = ctx.dataset_cfg["dpath"]
+
+            # A dense graph is all ones and reads no data, so it needs no
+            # fingerprint; a transition graph is counted from the files.
+            if graph_type == "dense":
+                graph_file = "gkt_graph_dense.npz"
+            else:
+                digest = cls._source_fingerprint(dpath, [train_file, test_file])
+                graph_file = f"gkt_graph_{graph_type}_{digest}.npz"
+
+            graph_path = os.path.join(dpath, graph_file)
             if os.path.exists(graph_path):
                 graph = np.load(graph_path, allow_pickle=True)["matrix"]
             else:
                 graph = get_gkt_graph(
                     ctx.dataset_cfg["num_c"],
-                    ctx.dataset_cfg["dpath"],
-                    ctx.dataset_cfg.get(
-                        "train_valid_original_file",
-                        ctx.dataset_cfg.get("train_valid_file"),
-                    ),
-                    ctx.dataset_cfg.get(
-                        "test_original_file", ctx.dataset_cfg.get("test_file")
-                    ),
+                    dpath,
+                    train_file,
+                    test_file,
                     graph_type=graph_type,
                     tofile=graph_file,
                 )

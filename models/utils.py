@@ -28,14 +28,24 @@ class transformer_FFN(nn.Module):
         return self.FFN(in_fea)
 
 
-def ut_mask(seq_len):
-    """Upper triangular mask."""
-    return torch.triu(torch.ones(seq_len, seq_len), diagonal=1).to(dtype=torch.bool).to(device)
+def ut_mask(seq_len, target_device=None):
+    """Upper triangular mask.
+
+    `target_device` follows the convention already used in models/saint.py.
+    Falling back to the module-level `device` keeps old callers working, but it
+    is the wrong default: that global is fixed at import time from
+    `torch.cuda.is_available()`, so on a machine with a GPU the mask lands on
+    CUDA even when the model was explicitly built on CPU, and the forward dies
+    on a device mismatch. Pass the device of a tensor you already have.
+    """
+    target_device = target_device or device
+    return torch.triu(torch.ones(seq_len, seq_len), diagonal=1).to(dtype=torch.bool).to(target_device)
 
 
-def pos_encode(seq_len):
-    """Position encoding indices."""
-    return torch.arange(seq_len).unsqueeze(0).to(device)
+def pos_encode(seq_len, target_device=None):
+    """Position encoding indices. See `ut_mask` on `target_device`."""
+    target_device = target_device or device
+    return torch.arange(seq_len).unsqueeze(0).to(target_device)
 
 
 def get_clones(module, n):

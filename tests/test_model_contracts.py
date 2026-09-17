@@ -421,6 +421,41 @@ class ModelContractTest(unittest.TestCase):
             f"{len(skipped)} skipped ({', '.join(skipped)})"
         )
 
+    @unittest.skipUnless(torch.cuda.is_available(),
+                         "only meaningful when a GPU is present to be wrongly preferred")
+    def test_4b_a_model_built_on_cpu_stays_on_cpu(self):
+        """A GPU being available must not decide where a model runs.
+
+        Several files hold a module-level
+        `device = torch.device("cuda" if torch.cuda.is_available() else "cpu")`
+        and reach for it instead of the device they were handed, so on a machine
+        with a GPU they could not be forced onto CPU at all. That blocks a
+        CPU-only CI job, and the same defect silently ignores --gpu_id on a
+        multi-GPU machine: IEKT rebuilt `device` from scratch inside its own
+        constructor, so `cuda:1` still built on `cuda:0`.
+
+        Skipped without CUDA, where the module-level default happens to be right
+        and the test would prove nothing.
+        """
+        for name in self.model_names:
+            if name in NEEDS_REAL_ARTEFACTS:
+                continue
+            with self.subTest(model=name):
+                mode = runner_dataset_mode(name)
+                _, trainer = make_model_and_trainer(name, mode, device="cpu")
+                trainer.model.eval()
+                batch = synth_batch(mode, runner_concept_shape(name, mode), device="cpu")
+
+                with torch.no_grad():
+                    pred, _, _ = forward(trainer, batch)
+
+                self.assertEqual(
+                    pred.device.type, "cpu",
+                    f"{name}: built on CPU but produced predictions on "
+                    f"{pred.device}. Something reached for a module-level device "
+                    "instead of the one it was given.",
+                )
+
     def test_5_inference_is_deterministic_in_eval_mode(self):
         """Two forwards over the same batch, in eval, must give the same answer.
 
