@@ -3,9 +3,17 @@ raw_path: data/assist2012/2012-2013-data-with-predictions-4-final.csv
 dpath: data/assist2012
 configf: configs/data_config.json
 
-# Scaffolding sub-problems only appear after a wrong answer, so keeping them
-# leaks the previous label. Set true only to reproduce pre-filtering numbers.
-keep_scaffolding: false
+# true = pyKT's preprocessing, which does not filter scaffolding. Every
+# published number on this dataset is computed this way, so this is the default
+# and the on-disk data (2,711,813 interactions / 29,018 students) matches it.
+#
+# Scaffolding sub-problems (original == 0) only appear after a wrong answer on
+# the main problem, so they carry the previous label; Xiong et al. EDM 2016
+# established that they should be dropped.
+#
+# Set false to drop them (2,623,624 interactions, -3.3%, 28,998 students), at
+# the cost of comparability, and regenerate the dataset.
+keep_scaffolding: true
 
 min_seq_len: 3
 maxlen: 200

@@ -3,11 +3,23 @@ raw_path: data/assist2017/anonymized_full_release_competition_dataset.csv
 dpath: data/assist2017
 configf: configs/data_config.json
 
-# true restores the unfiltered action log (the widely cited 1,709 students /
-# 942,816 interactions protocol): it keeps BOTH scaffolding rows and repeated
-# attempt actions on the same problem, and with them the label leakage. Use it
-# only to compare against papers reporting those counts.
-keep_scaffolding: false
+# true = pyKT's preprocessing: the raw action log, the widely cited 1,709
+# students / 942,816 interactions protocol. This is the default, and the
+# on-disk data matches it.
+#
+# This release is an ACTION log -- one row per attempt or help request, not per
+# problem -- so it carries two leaks: scaffolding rows (original == 0, generated
+# only after a wrong answer) and repeated attempts on the same problem, which
+# run 0,0,...,1 until solved. Measured: within original == 1, first-attempt
+# correctness is 0.448 but last-attempt is 0.599, and only 84.1% of attempt
+# groups are label-constant.
+#
+# Set false to keep main problems only and collapse each attempt group to its
+# first action (171,431 interactions, -81.8%, students unchanged at 1,709),
+# matching the granularity of the assist2009 collapsed release. Correct data,
+# but it breaks comparability with every paper citing 942,816, and the dataset
+# must be regenerated.
+keep_scaffolding: true
 
 min_seq_len: 3
 maxlen: 200

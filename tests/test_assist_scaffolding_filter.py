@@ -1,11 +1,17 @@
-"""ASSISTments preprocessing must drop scaffolding rows by default.
+"""The ASSISTments `keep_scaffolding` switch must work in both directions.
 
-Scaffolding sub-problems are generated only after a wrong answer on the main
-problem, so leaving them in the sequence leaks the previous label. assist2017 is
-additionally an action log in which a failed problem is retried until solved,
-so it also has to be collapsed to one row per problem attempt.
+`keep_scaffolding=True` is pyKT's preprocessing and the project default: the
+raw rows, unfiltered, which is what every published number on these datasets is
+computed from.
 
-`keep_scaffolding=True` restores the unfiltered behaviour for literature parity.
+`keep_scaffolding=False` drops the leak. Scaffolding sub-problems are generated
+only after a wrong answer on the main problem, so leaving them in carries the
+previous label; assist2017 is additionally an action log in which a failed
+problem is retried until solved, so it must also be collapsed to one row per
+problem attempt. Correct data, but not comparable to the literature.
+
+These tests pass `keep_scaffolding` explicitly and so do not depend on which
+value is the default.
 """
 
 import csv

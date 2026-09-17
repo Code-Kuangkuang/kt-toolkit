@@ -3,9 +3,20 @@ raw_path: data/assist2009/skill_builder_data_corrected_collapsed.csv
 dpath: data/assist2009
 configf: configs/data_config.json
 
-# Scaffolding sub-problems only appear after a wrong answer, so keeping them
-# leaks the previous label. Set true only to reproduce pre-filtering numbers.
-keep_scaffolding: false
+# true = pyKT's preprocessing, which does not filter scaffolding. Every
+# published number on this dataset is computed this way, so this is the default
+# and the on-disk data (283,105 interactions / 4,163 students) matches it.
+#
+# The cost is real and measured: scaffolding sub-problems (original == 0) are
+# generated only after a wrong answer on the main problem, so they carry the
+# previous label -- 8.6x leakage (0.331 correct right after a wrong main problem
+# vs 0.039 after a correct one). Xiong et al. EDM 2016 established that they
+# should be dropped, and qDKT/GIKT/PEBG do.
+#
+# Set false to drop them: cleaner data (259,399 interactions, -8.4%), but the
+# numbers stop being comparable to pyKT or the literature, and the dataset must
+# be regenerated (scripts/run_clean.py) with the stale .pkl caches deleted.
+keep_scaffolding: true
 
 
 min_seq_len: 3
