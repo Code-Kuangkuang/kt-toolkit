@@ -141,35 +141,86 @@ loss terms are added inside `_forward_batch`; several trainers subclass a
 sibling rather than `BaseTrainer` when only the batch unpacking differs.
 
 If the new model needs data the standard loaders do not produce -- a graph, a
-difficulty map, precomputed statistics -- that wiring currently lives in
-`core/train_runner.py` behind a `model_name` check. See the note below.
+difficulty map, precomputed statistics -- declare it as a nested `Inputs` class
+on the model rather than adding a branch to the runner. See "Model Input Specs"
+below.
 
-## Known Structural Debt
+## Model Input Specs
 
 The registry removed per-model branching from model and trainer construction,
-but not from feature preparation. `core/train_runner.py` still dispatches on
-`model_name` for the extra inputs some models need: LPKT time indices, the
-DKT-PEBG booster, dkt_forget gap statistics, DIMKT difficulty maps, the GKT
-graph, the DGEKT hypergraph, HQAF feature maps, plus two membership sets that
-decide dataset mode and question-id requirements.
+but not from feature preparation: `core/train_runner.py` dispatched on
+`model_name` for every model needing data the standard loaders do not produce.
+That is the same coupling the registry exists to remove, and it grew with each
+such model.
 
-This is the same shape of coupling the registry was introduced to remove, and it
-grows with every model that needs bespoke inputs. A single model's requirements
-are spread across the file rather than declared in one place: `hqaf` appears in
-both membership sets, in the feature-map block, in two `model_kwargs`
-injections, and in the dataset kwargs -- and nothing at import time catches a
-missed entry.
+A model now declares its own requirements as a nested `Inputs` class, defined in
+`core/model_inputs.py`:
 
-The fix is to move each case behind a model-side hook so the runner only
-orchestrates. Two constraints on that refactor: the current blocks mutate
-`model_cfg_local` and `dataset_cfg_local` in place and later code reads those
-mutations back (including through the `other_config_keys` filter, which routes
-`num_at`/`num_it`/`use_timestamps` around `model_kwargs`), and every hook must
-run before `set_seed`, or model initialisation draws from a different RNG
-stream. Equivalence is checkable: same seed and fold must reproduce the metrics
-exactly.
+```python
+@MODEL_REGISTRY.register("gkt")
+class GKT(nn.Module):
+    class Inputs(InputSpec):
+        @classmethod
+        def prepare(cls, ctx):
+            return ModelInputs(model_kwargs={"graph": load_graph(ctx)})
+```
 
-Until then, adding a model with unusual inputs means editing the runner.
+`prepare` receives a `RunContext` (resolved dataset mode, this fold's config
+copies, a file resolver, `train_folds()`) and returns a `ModelInputs` carrying
+`model_kwargs`, `dataset_kwargs`, `model_cfg_updates`, `dataset_cfg_updates` and
+`run_config_extras`. `validate` covers the declarative cases -- dataset mode and
+the question-id requirement -- and `post_build` handles the one model that needs
+surgery after construction.
+
+Three rules the interface exists to enforce:
+
+1. **`prepare` returns its effects.** The old blocks mutated `model_cfg_local`
+   and `dataset_cfg_local` in place and later code read those mutations back, so
+   what a block did could only be established by reading the rest of the file.
+2. **`prepare` runs before `set_seed`.** Anything consuming the RNG afterwards
+   shifts model initialisation, changing the metrics without changing the
+   algorithm.
+3. **Heavy imports go inside the method.** `models/` does not import `datasets/`;
+   keeping `import models` cheap also stops a future cycle.
+
+### Migration status
+
+In progress, one model at a time. The `model_name` chain still handles the
+models that have not moved, and shrinks as they do.
+
+| Moved | Remaining |
+|---|---|
+| `gkt` | `dkt_pebg`, `lpkt`/`hdkt`, `dkt_forget`, `dimkt`, `hqaf`, `dgekt`, `hawkes` (post-build), and the three membership sets |
+
+Suggested order, dirtiest last: dgekt, hawkes, dkt_pebg, dkt_forget, dimkt,
+lpkt/hdkt, hqaf. The membership sets go last, once every model declares a spec.
+`hqaf` is the worst case: it rides DIMKT's `difficulty_maps` channel, an alias
+that is currently implicit and should become explicit in its spec.
+
+Also deferred: `other_config_keys` in the runner is a blacklist that exists only
+because `model_kwargs` is built by dumping the whole model config and filtering
+it. Explicit `model_kwargs` should make it unnecessary, but removing it means
+touching every model constructor -- a separate change, and one that would make
+the equivalence diff too large to localise.
+
+### Checking a move
+
+Pure code motion must produce bit-identical metrics. Before moving a model:
+
+```bash
+python research/check_input_refactor.py record --models gkt --fold 0 --epochs 1
+```
+
+and after:
+
+```bash
+python research/check_input_refactor.py verify --models gkt --fold 0 --epochs 1
+```
+
+Metrics are compared exactly; "close" is a failure, because a small drift means
+the RNG stream moved. `run_config.json` is diffed as a warning, where an
+unexplained difference usually means a `model_cfg` key was left behind. Run it
+per model -- batching five moves and failing does not say which one broke.
 
 ## Common Risks
 

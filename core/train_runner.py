@@ -3,12 +3,13 @@ import datetime
 import os
 import uuid
 
-import numpy as np
 import torch
 from rich import print
 
 from core.factory import build_dataset, build_model, build_trainer
 from core.dataset_names import is_hidden_label_dataset, normalize_dataset_name
+from core.model_inputs import RunContext, spec_for
+from core.registry import MODEL_REGISTRY
 from core.run_support import (
     aggregate_fold_metrics,
     apply_overrides,
@@ -27,7 +28,6 @@ from datasets.feature_utils import (
     compute_dimkt_difficulty_maps,
     compute_hqaf_feature_maps,
 )
-from models.gkt_utils import get_gkt_graph
 from models.dgekt_utils import build_dgekt_graphs
 from strategies import apply_dkt_pebg_strategy
 
@@ -174,6 +174,36 @@ def train_one_fold(
         train_cfg_local["eval_window"] = bool(model_cfg_local["eval_window"])
     model_cfg_local["dataset_mode"] = resolved_dataset_mode
 
+    # Migration in progress: models that declare an `Inputs` spec get their
+    # extra inputs from it, and the `model_name` chain below is skipped for
+    # them. See "Known Structural Debt" in docs/architecture.md; the chain
+    # shrinks by one model at a time, and each move is checked for bit-identical
+    # metrics by research/check_input_refactor.py.
+    if model_name not in MODEL_REGISTRY.get_all():
+        raise KeyError(
+            f"Model {model_name!r} is not registered. Registered models: "
+            f"{', '.join(sorted(MODEL_REGISTRY.get_all()))}. A model class only "
+            "registers once its module is imported -- check models/__init__.py."
+        )
+    spec = spec_for(MODEL_REGISTRY.get(model_name))
+    spec_ctx = RunContext(
+        model_name=model_name,
+        dataset_name=dataset_name,
+        fold_id=fold_id,
+        dataset_mode=resolved_dataset_mode,
+        model_cfg=model_cfg_local,
+        dataset_cfg=dataset_cfg_local,
+        train_cfg=train_cfg_local,
+        root_dir=root_dir,
+        resolve_file=lambda primary, fallback: _resolve_existing_sequence_filename(
+            dataset_cfg_local, primary, fallback
+        ),
+    )
+    spec.validate(spec_ctx)
+    spec_inputs = spec.prepare(spec_ctx)
+    model_cfg_local.update(spec_inputs.model_cfg_updates)
+    dataset_cfg_local.update(spec_inputs.dataset_cfg_updates)
+
     booster_info = None
     if model_name == "dkt_pebg":
         model_cfg_local, booster_info = apply_dkt_pebg_strategy(
@@ -302,23 +332,8 @@ def train_one_fold(
         model_kwargs.setdefault("num_pid", dataset_cfg_local.get("num_q", 0))
     if model_name == "hqaf":
         model_kwargs.setdefault("num_type", dataset_cfg_local.get("num_type", model_cfg_local.get("num_type", 16)))
-    if model_name == "gkt":
-        graph_type = model_cfg_local.get("graph_type", "dense")
-        graph_file = f"gkt_graph_{graph_type}.npz"
-        graph_path = os.path.join(dataset_cfg_local["dpath"], graph_file)
-        if os.path.exists(graph_path):
-            graph = np.load(graph_path, allow_pickle=True)["matrix"]
-        else:
-            graph = get_gkt_graph(
-                dataset_cfg_local["num_c"],
-                dataset_cfg_local["dpath"],
-                dataset_cfg_local.get("train_valid_original_file", dataset_cfg_local.get("train_valid_file")),
-                dataset_cfg_local.get("test_original_file", dataset_cfg_local.get("test_file")),
-                graph_type=graph_type,
-                tofile=graph_file,
-            )
-        model_kwargs["graph"] = graph.float() if torch.is_tensor(graph) else torch.tensor(graph).float()
-    elif model_name == "dgekt":
+    # Migrated to models/gkt.py::GKT.Inputs.
+    if model_name == "dgekt":
         if "concepts" not in dataset_cfg_local.get("input_type", []):
             raise ValueError(
                 f"DGEKT requires question-concept associations, but dataset {dataset_name} "
@@ -362,6 +377,12 @@ def train_one_fold(
             }
         )
 
+    # Applied last so a spec wins over the legacy chain during the migration.
+    model_kwargs.update(spec_inputs.model_kwargs)
+
+    # Every spec has run by now, so the RNG stream from here on is identical to
+    # what it was before the migration. Nothing below may consume randomness
+    # ahead of this call.
     set_seed(seed)
 
     # Set device with specified GPU ID
@@ -388,6 +409,7 @@ def train_one_fold(
     if model_name == "hawkes":
         model.apply(model.init_weights)
         model = model.double()
+    model = spec.post_build(model, spec_ctx)
 
     # Resolve timestamp loading before any run overview/logging.
     model_use_timestamps = model_cfg_local.get("use_timestamps", False)
@@ -408,6 +430,7 @@ def train_one_fold(
         # truncation can be measured without editing code.
         "concept_mode": model_cfg_local.get("concept_mode"),
     }
+    dataset_feature_kwargs.update(spec_inputs.dataset_kwargs)
 
     train_loader, valid_loader = build_dataset(
         "kt_default",
@@ -549,6 +572,7 @@ def train_one_fold(
         "dataset_config": dataset_cfg_local,
         "dgekt_graph": dgekt_graph_info,
         "booster_info": booster_info,
+        **spec_inputs.run_config_extras,
         "wandb": {
             "enabled": bool(wandb_cfg),
             "project": wandb_cfg.get("project") if wandb_cfg else None,

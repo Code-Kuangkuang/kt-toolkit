@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
 
+from core.model_inputs import InputSpec, ModelInputs
 from core.registry import MODEL_REGISTRY
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -83,6 +84,44 @@ class GKT(nn.Module):
         dropout: dropout probability
         emb_type: embedding type
     """
+
+    class Inputs(InputSpec):
+        """GKT needs a concept-transition graph, which the loaders do not build.
+
+        Cached next to the data as `gkt_graph_<type>.npz`; `get_gkt_graph`
+        writes that file itself on a miss.
+        """
+
+        @classmethod
+        def prepare(cls, ctx):
+            import os
+
+            import numpy as np
+            import torch as _torch
+
+            from models.gkt_utils import get_gkt_graph
+
+            graph_type = ctx.model_cfg.get("graph_type", "dense")
+            graph_file = f"gkt_graph_{graph_type}.npz"
+            graph_path = os.path.join(ctx.dataset_cfg["dpath"], graph_file)
+            if os.path.exists(graph_path):
+                graph = np.load(graph_path, allow_pickle=True)["matrix"]
+            else:
+                graph = get_gkt_graph(
+                    ctx.dataset_cfg["num_c"],
+                    ctx.dataset_cfg["dpath"],
+                    ctx.dataset_cfg.get(
+                        "train_valid_original_file",
+                        ctx.dataset_cfg.get("train_valid_file"),
+                    ),
+                    ctx.dataset_cfg.get(
+                        "test_original_file", ctx.dataset_cfg.get("test_file")
+                    ),
+                    graph_type=graph_type,
+                    tofile=graph_file,
+                )
+            tensor = graph.float() if _torch.is_tensor(graph) else _torch.tensor(graph).float()
+            return ModelInputs(model_kwargs={"graph": tensor})
 
     def __init__(self, num_c, hidden_dim, emb_size, graph_type="dense", graph=None, dropout=0.5, emb_type="qid", emb_path="", bias=True, **kwargs):
         super(GKT, self).__init__()
