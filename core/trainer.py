@@ -24,27 +24,12 @@ class BaseTrainer:
             metrics_dict["epoch"] = epoch
             self.hooks.epoch_end(self, metrics_dict)
 
-            # Evaluate on test set every 10 epochs only when a labeled test
-            # loader is available. Some datasets, such as AAAI2023, provide a
-            # prediction-only test file with hidden labels.
-            if self.test_loader is not None and epoch % 10 == 0:
-                test_metrics = self.evaluate_test()
-                if test_metrics is not None:
-                    print("")
-                    print("=" * 50)
-                    print("  [Test Set - Read Only] Every-10-Epochs Check")
-                    print("=" * 50)
-                    tauc = test_metrics.get("test_auc", -1)
-                    tacc = test_metrics.get("test_acc", -1)
-                    print(f"  Test AUC:  {tauc:.4f}" if tauc >= 0 else "  Test AUC:  N/A")
-                    print(f"  Test Acc:  {tacc:.4f}" if tacc >= 0 else "  Test Acc:  N/A")
-                    print("=" * 50)
-                    print("  WARNING: This is a read-only check. Do NOT use these numbers")
-                    print("     for hyperparameter tuning or final results (Data Leakage).")
-                    print("     Final results must use the best-valid model.")
-                    print("=" * 50)
-                    print("")
-
+            # The test set is deliberately not scored inside this loop. It used
+            # to be printed every 10 epochs behind a "read only" banner, but a
+            # number you can see is a number you can tune against: watching test
+            # AUC move while adjusting hyperparameters is selection on the test
+            # set regardless of what the banner says. Test scoring happens once,
+            # in train_runner, against the best-validation checkpoint.
             self._log_epoch(metrics_dict)
             if self._should_stop(epoch, metrics_dict):
                 break
@@ -71,8 +56,13 @@ class BaseTrainer:
         return (epoch - self.best_epoch) >= patience
 
     def _score_loader(self, loader, prefix):
+        # `None`, not -1, for an unavailable metric. -1 is a number: it flows
+        # into best_metrics.json and is then averaged by aggregate_fold_metrics
+        # like any other value, so a single unscorable fold drags a five-fold
+        # mean down by ~0.35 while the fold count still reads 5/5. `None` is
+        # skipped by the aggregator and shows up as a short count instead.
         if loader is None:
-            return {f"{prefix}_auc": -1, f"{prefix}_acc": -1}
+            return {f"{prefix}_auc": None, f"{prefix}_acc": None}
 
         self.model.eval()
         y_true = []
@@ -87,14 +77,38 @@ class BaseTrainer:
                 y_true.append(target.detach().cpu().numpy())
 
         if not y_true:
-            return {f"{prefix}_auc": -1, f"{prefix}_acc": -1}
+            print(f"Warning: {prefix} loader produced no scored positions.")
+            return {f"{prefix}_auc": None, f"{prefix}_acc": None}
 
         ts = np.concatenate(y_true, axis=0)
         ps = np.concatenate(y_score, axis=0)
-        try:
+
+        # Two very different reasons roc_auc_score raises, previously collapsed
+        # into the same -1: a split that happens to be single-class (benign, and
+        # expected on tiny debug splits), versus NaN predictions or mismatched
+        # shapes (a bug that must not be swallowed).
+        if not np.isfinite(ps).all():
+            raise ValueError(
+                f"{prefix}: model produced {np.count_nonzero(~np.isfinite(ps))} "
+                f"non-finite predictions out of {ps.size}. This is a model bug, "
+                "not a scoring edge case."
+            )
+        if ts.shape[0] != ps.shape[0]:
+            raise ValueError(
+                f"{prefix}: {ts.shape[0]} targets against {ps.shape[0]} predictions. "
+                "They must be flattened through the same smasks."
+            )
+
+        classes = np.unique(ts)
+        if classes.size < 2:
+            print(
+                f"Warning: {prefix} split is single-class (all {classes.tolist()}); "
+                "AUC is undefined and reported as null."
+            )
+            auc = None
+        else:
             auc = metrics.roc_auc_score(y_true=ts, y_score=ps)
-        except Exception:
-            auc = -1
+
         prelabels = [1 if p >= 0.5 else 0 for p in ps]
         acc = metrics.accuracy_score(ts, prelabels)
         return {f"{prefix}_auc": auc, f"{prefix}_acc": acc}
@@ -127,12 +141,10 @@ class BaseTrainer:
             lines.append(f"  Train Loss: {metrics_dict['train_loss']:.4f}")
         if "valid_auc" in metrics_dict:
             auc = metrics_dict['valid_auc']
-            auc_str = f"{auc:.4f}" if auc >= 0 else "N/A"
-            lines.append(f"  Valid AUC:  {auc_str}")
+            lines.append(f"  Valid AUC:  {'N/A' if auc is None else f'{auc:.4f}'}")
         if "valid_acc" in metrics_dict:
             acc = metrics_dict['valid_acc']
-            acc_str = f"{acc:.4f}" if acc >= 0 else "N/A"
-            lines.append(f"  Valid Acc:  {acc_str}")
+            lines.append(f"  Valid Acc:  {'N/A' if acc is None else f'{acc:.4f}'}")
 
         for line in lines:
             print(line)

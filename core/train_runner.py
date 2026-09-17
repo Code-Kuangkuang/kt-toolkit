@@ -90,6 +90,11 @@ def _resolve_dataset_mode(model_name, train_cfg, model_cfg, overrides=None):
     return mode
 
 
+def _fmt(value):
+    """Format a metric that may legitimately be absent (single-class split)."""
+    return "N/A" if value is None else f"{value:.4f}"
+
+
 def _resolve_existing_sequence_filename(dataset_cfg, primary_key, fallback_key):
     """Return the filename that the dataset builder will actually load."""
     primary_name = dataset_cfg.get(primary_key) or dataset_cfg.get(fallback_key)
@@ -631,14 +636,17 @@ def train_one_fold(
             print(f"Loaded best model from epoch {trainer.best_metrics.get('epoch', '?')} for test evaluation")
             best_test_metrics = trainer.evaluate_test()
             if best_test_metrics:
-                print(f"[Best-Valid Epoch] Test AUC={best_test_metrics.get('test_auc', -1):.4f}, ACC={best_test_metrics.get('test_acc', -1):.4f}")
+                print(
+                    f"[Best-Valid Epoch] Test AUC={_fmt(best_test_metrics.get('test_auc'))}, "
+                    f"ACC={_fmt(best_test_metrics.get('test_acc'))}"
+                )
             if window_test_loader is not None:
                 best_window_metrics = trainer.evaluate_window_test()
                 if best_window_metrics:
                     print(
                         f"[Best-Valid Epoch] Window Test AUC="
-                        f"{best_window_metrics.get('window_test_auc', -1):.4f}, "
-                        f"ACC={best_window_metrics.get('window_test_acc', -1):.4f}"
+                        f"{_fmt(best_window_metrics.get('window_test_auc'))}, "
+                        f"ACC={_fmt(best_window_metrics.get('window_test_acc'))}"
                         "   (pykt-comparable protocol)"
                     )
         else:
@@ -651,7 +659,10 @@ def train_one_fold(
         print(f"Loaded last epoch model for test evaluation")
         last_test_metrics = trainer.evaluate_test()
         if last_test_metrics:
-            print(f"[Last Epoch]        Test AUC={last_test_metrics.get('test_auc', -1):.4f}, ACC={last_test_metrics.get('test_acc', -1):.4f}")
+            print(
+                f"[Last Epoch]        Test AUC={_fmt(last_test_metrics.get('test_auc'))}, "
+                f"ACC={_fmt(last_test_metrics.get('test_acc'))}"
+            )
         # Leave the model holding the weights this run actually selected. The
         # last-epoch load above is only for the secondary metric, and nothing
         # should inherit it by accident.
@@ -660,16 +671,19 @@ def train_one_fold(
 
     best_metrics = getattr(trainer, "best_metrics", None)
     if best_metrics is not None:
-        # Rename keys so best_metric dict carries unambiguous names
+        # Rename keys so best_metric dict carries unambiguous names. None is
+        # carried through rather than defaulted to -1: aggregate_fold_metrics
+        # skips None and counts the fold as missing, whereas -1 would be
+        # averaged in as a real score.
         if best_test_metrics:
-            best_metrics["best_test_auc"] = best_test_metrics.get("test_auc", -1)
-            best_metrics["best_test_acc"] = best_test_metrics.get("test_acc", -1)
+            best_metrics["best_test_auc"] = best_test_metrics.get("test_auc")
+            best_metrics["best_test_acc"] = best_test_metrics.get("test_acc")
         if best_window_metrics:
-            best_metrics["best_window_test_auc"] = best_window_metrics.get("window_test_auc", -1)
-            best_metrics["best_window_test_acc"] = best_window_metrics.get("window_test_acc", -1)
+            best_metrics["best_window_test_auc"] = best_window_metrics.get("window_test_auc")
+            best_metrics["best_window_test_acc"] = best_window_metrics.get("window_test_acc")
         if last_test_metrics:
-            best_metrics["last_test_auc"] = last_test_metrics.get("test_auc", -1)
-            best_metrics["last_test_acc"] = last_test_metrics.get("test_acc", -1)
+            best_metrics["last_test_auc"] = last_test_metrics.get("test_auc")
+            best_metrics["last_test_acc"] = last_test_metrics.get("test_acc")
         save_run_config(os.path.join(ckpt_dir, "best_metrics.json"), best_metrics)
 
     return {

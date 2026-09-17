@@ -22,8 +22,18 @@ def set_seed(seed):
         print("Set seed failed, details are ", exc)
     np.random.seed(seed)
     random.seed(seed)
-    os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+    # Needed for deterministic cuBLAS GEMMs, and cheap: it only sizes a
+    # workspace.
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"
+    # CUDA_LAUNCH_BLOCKING serialises every kernel launch against the host. It
+    # makes an async CUDA error surface at its real call site instead of at some
+    # later sync point, which is worth a lot while debugging and costs a large
+    # part of GPU throughput the rest of the time. It is not needed for
+    # reproducibility -- the seeds and the cuDNN flags above cover that -- so it
+    # is opt-in.
+    if os.environ.get("KT_DEBUG") == "1":
+        os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+        print("KT_DEBUG=1: CUDA_LAUNCH_BLOCKING enabled (slow; debugging only).")
 
 
 def build_optimizer(train_cfg, model_cfg, model):

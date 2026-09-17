@@ -118,8 +118,23 @@ the measured cost of KC truncation and of scoring repeated KC rows.
 
 Both test metrics are reported: `best_test_auc` on the ordinary split and
 `best_window_test_auc` on the windowed split, the latter being the
-pyKT-comparable figure. The windowed evaluation runs once, on the
-best-validation checkpoint, never inside the epoch loop.
+pyKT-comparable figure.
+
+Neither is computed inside the epoch loop. Test scoring happens once, in
+`train_one_fold`, against the best-validation checkpoint. The trainer used to
+print test AUC every ten epochs behind a "read only" banner; that was removed,
+because a number you can watch is a number you can tune against, and the banner
+does not change what a person does with it. The canonical selection metric is
+validation AUC.
+
+A metric that cannot be computed is `None`, never a sentinel number. `-1` used
+to stand in when `roc_auc_score` raised, which meant a single unscorable fold
+was averaged into the cross-validation mean as a real score -- roughly -0.35 on
+a five-fold mean -- while the fold count still read 5/5. `None` is skipped by
+`aggregate_fold_metrics` and surfaces as a short count instead. A single-class
+split warns and reports `None`; non-finite predictions or a target/prediction
+length mismatch raise, because those are model bugs rather than scoring edge
+cases.
 
 ## Adding A Model
 
