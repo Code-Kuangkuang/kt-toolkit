@@ -237,6 +237,45 @@ the RNG stream moved. `run_config.json` is diffed as a warning, where an
 unexplained difference usually means a `model_cfg` key was left behind. Run it
 per model -- batching five moves and failing does not say which one broke.
 
+## Model Contract Tests
+
+`tests/test_model_contracts.py` walks the registry rather than naming models, so
+a new model is covered as soon as it is registered. Per model it checks that the
+model and trainer are registered together, that a config block exists, that the
+model constructs, that a small batch runs forward and backward, that predictions
+line up with `smasks`, that loss and gradients are finite, and that flipping the
+last response leaves earlier predictions alone.
+
+Four models are skipped with a stated reason, because their forward needs an
+artefact the harness does not build: `gkt` and `dgekt` need graphs derived from
+real sequences, `dkt_pebg` a pretrained booster, `hawkes` the double-precision
+setup the runner applies. The skip list is the honest statement of what is still
+uncovered.
+
+Two violations are recorded rather than fixed, in `KNOWN_ALIGNMENT_VIOLATIONS`
+and `KNOWN_RANGE_VIOLATIONS`. The tests assert that these still fail, so an entry
+must be deleted when the model is fixed, and a model that starts violating
+without an entry breaks the build. Both are IEKT:
+
+- `models/iekt.py:478` computes `seq_num = (qseqs != 0).sum() + 1`. The `+1`
+  counts one position past the real sequence, and `!= 0` treats question id 0 as
+  padding even though it is a legitimate id, so the offset varies by row.
+  Measured on assist2009 fold 0, first batch of 64: 4556 scored positions where
+  `smasks` selects 3886.
+- `models/iekt.py:41-47` returns a bare `nn.Linear` output with no sigmoid, so
+  predictions are unbounded. AUC is rank-based and unaffected, but the `p >= 0.5`
+  accuracy threshold in `_score_loader` is meaningless for a non-probability.
+
+Two things the harness had to match exactly, both found by getting them wrong:
+a real batch has `rseqs` as float32 and `masks`/`smasks` as bool, and it carries
+`seq_len - 1` positions, because the dataset builds inputs from `cur[:-1]`.
+
+Thirteen model files hold a module-level
+`device = torch.device("cuda" if torch.cuda.is_available() else "cpu")` and use
+it instead of the device passed in, so on a machine with a GPU they cannot run on
+CPU. That blocks a CPU-only CI job and is the reason the contract tests run on
+whichever device the runner would use.
+
 ## Common Risks
 
 - Mismatched `qseqs`/`cseqs` dimensions can cause embedding index errors.
