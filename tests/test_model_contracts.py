@@ -90,46 +90,18 @@ NEEDS_REAL_ARTEFACTS = {
     "hawkes": "runs in double precision with its own init, applied by train_runner",
 }
 
-# Violations recorded rather than skipped: the tests assert these still fail, so
-# an entry has to be deleted when the model is fixed, and a model that starts
-# violating without an entry breaks the build.
-KNOWN_RANGE_VIOLATIONS = {
-    "iekt": (
-        "models/iekt.py:41-47 -- the prediction head is `self.out(self.dropout(x))` "
-        "with self.out a bare nn.Linear and no sigmoid; the `self.act = Sigmoid()` "
-        "defined on line 42 is never called. Predictions are therefore unbounded "
-        "(measured [-0.162, 0.379] at init). AUC is rank-based and unaffected, but "
-        "BaseTrainer._score_loader thresholds accuracy at `p >= 0.5`, which has no "
-        "meaning for a non-probability, so every reported IEKT accuracy is wrong."
-    ),
-}
+# Violations recorded rather than skipped. The tests assert that a recorded
+# violation still fails, so an entry must be deleted when its model is fixed and
+# a model that starts violating without an entry breaks the build.
+#
+# All three held IEKT until 2026-09-17: it scored past smasks, returned logits
+# where the evaluator expects probabilities, and sampled its policy during eval.
+# Empty is the intended steady state, not a sign the checks are unused.
+KNOWN_RANGE_VIOLATIONS = {}
 
-KNOWN_NONDETERMINISM = {
-    "iekt": (
-        "models/iekt.py:380 and :416 draw actions with Categorical(...).sample() "
-        "on every forward, with no `self.training` guard, so evaluation samples "
-        "a fresh policy rollout each time. Measured: the same batch scored twice "
-        "in eval mode differs by 0.287 in prediction space. Every reported IEKT "
-        "metric is therefore one draw from a distribution rather than a value, "
-        "and re-running the same checkpoint gives a different number. A fix "
-        "would take the argmax (or the policy mean) when self.training is False."
-    ),
-}
+KNOWN_NONDETERMINISM = {}
 
-KNOWN_ALIGNMENT_VIOLATIONS = {
-    "iekt": (
-        "models/iekt.py:478 computes seq_num = (qseqs != 0).sum() + 1. The +1 "
-        "counts one position past the real sequence, and `!= 0` treats question "
-        "id 0 as padding although it is a legitimate id, so the offset differs "
-        "row by row. Measured on assist2009 fold 0, first batch of 64: iekt "
-        "scores 4556 positions where smasks selects 3886, 17% more, including "
-        "padding. Every stored IEKT number is therefore computed over a "
-        "different position set than every other model in the same table. The "
-        "2026-09-16 fidelity audit found iekt faithful to pyKT, so this is most "
-        "likely inherited rather than local -- fixing it is a deliberate "
-        "deviation and needs the same call as the scaffolding filter."
-    ),
-}
+KNOWN_ALIGNMENT_VIOLATIONS = {}
 
 # Constructor arguments the runner injects from its model_name chain rather than
 # from the config block. Sizes are arbitrary but must exceed the ids the

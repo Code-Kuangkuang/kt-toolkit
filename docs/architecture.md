@@ -286,23 +286,36 @@ learned parameter only when `use_runtime_concepts` is on, which the runner ties
 to `all_in_one`. Running LPKT `one_by_one` re-randomises its initial knowledge
 state every forward, so its evaluation is not reproducible.
 
-Three violations are recorded rather than fixed, in `KNOWN_ALIGNMENT_VIOLATIONS`,
-`KNOWN_RANGE_VIOLATIONS` and `KNOWN_NONDETERMINISM`. The tests assert that these
-still fail, so an entry must be deleted when the model is fixed, and a model that
-starts violating without an entry breaks the build. All three are IEKT:
+`KNOWN_ALIGNMENT_VIOLATIONS`, `KNOWN_RANGE_VIOLATIONS` and
+`KNOWN_NONDETERMINISM` record violations rather than skipping them. The tests
+assert that a recorded violation still fails, so an entry must be deleted when
+its model is fixed, and a model that starts violating without an entry breaks the
+build. All three are currently empty, which is the intended steady state.
 
-- `models/iekt.py:478` computes `seq_num = (qseqs != 0).sum() + 1`. The `+1`
-  counts one position past the real sequence, and `!= 0` treats question id 0 as
-  padding even though it is a legitimate id, so the offset varies by row.
-  Measured on assist2009 fold 0, first batch of 64: 4556 scored positions where
-  `smasks` selects 3886.
-- `models/iekt.py:41-47` returns a bare `nn.Linear` output with no sigmoid, so
-  predictions are unbounded. AUC is rank-based and unaffected, but the `p >= 0.5`
-  accuracy threshold in `_score_loader` is meaningless for a non-probability.
-- `models/iekt.py:380` and `:416` call `Categorical(...).sample()` with no
-  `self.training` guard, so evaluation draws a fresh policy rollout each time.
-  The same batch scored twice in eval differs by 0.287, which means every
-  reported IEKT metric is one draw from a distribution rather than a value.
+All three held IEKT when the suite was first written, and all three are fixed:
+
+- `train_one_step` derived its scored positions from
+  `seq_num = (qseqs != 0).sum() + 1` and took that many columns from the front of
+  the rollout. The `+1` was meant to absorb the column that `data_new['cc']`
+  prepends, but as a length it instead kept column 0 -- the learner's first
+  response, which no protocol scores -- and dropped the last. `!= 0` also treats
+  question id 0 as padding although it is a legitimate id, so the error varied
+  by row. Measured on assist2009 fold 0, first batch of 64: 4556 scored positions
+  where `smasks` selected 3886. Positions now come from `smasks` applied to
+  `[:, 1:]`, since column `j + 1` predicts the target `smasks[:, j]` marks.
+- The prediction head is a bare `nn.Linear`, so `train_one_step` returned raw
+  logits. The loss wants those -- it uses `BCEWithLogitsLoss` -- but
+  `_score_loader` thresholds accuracy at `p >= 0.5`, which is meaningless for a
+  non-probability. It now returns `sigmoid(y)` while the loss keeps the logits.
+- Policy actions were drawn with `Categorical(...).sample()` on every forward,
+  with no `self.training` guard, so evaluation sampled a fresh rollout each time
+  and the same batch scored twice differed by 0.287. Sampling is required during
+  training, because the REINFORCE gradient is defined against that distribution;
+  at evaluation the action is now the argmax.
+
+IEKT results produced before 2026-09-17 are not comparable with results produced
+after: the scored positions changed, and so did the RL reward normalisation that
+shared the same broken length.
 
 Four things the harness had to match exactly, each found by getting it wrong and
 reading the resulting model-side error:

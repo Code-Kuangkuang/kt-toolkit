@@ -339,6 +339,23 @@ class IEKT(nn.Module):
 
         self.sigmoid = torch.nn.Sigmoid()
 
+    def _policy_action(self, probs):
+        """Draw a policy action: sampled while training, greedy at evaluation.
+
+        IEKT is trained with REINFORCE, so the action has to be sampled during
+        training -- the gradient is defined against that distribution. At
+        evaluation the sample only injects noise: the same checkpoint scoring
+        the same batch twice differed by 0.287 in prediction space, which makes
+        a reported metric one draw from a distribution rather than a value.
+
+        argmax is the standard deterministic reduction of a categorical policy.
+        It changes IEKT's evaluation numbers, so results produced before this
+        are not comparable with results produced after.
+        """
+        if self.training:
+            return Categorical(probs).sample()
+        return probs.argmax(dim=-1)
+
     def forward(self, data, return_details=False, process=True):
         """Forward pass for training/prediction.
 
@@ -377,8 +394,7 @@ class IEKT(nn.Module):
 
             # Sample concept embedding (policy gradient)
             flip_prob_emb = self.model.pi_cog_func(ques_h)
-            m = Categorical(flip_prob_emb)
-            emb_ap = m.sample()
+            emb_ap = self._policy_action(flip_prob_emb)
             emb_p = self.model.cog_matrix[emb_ap, :]
 
             # Get prediction
@@ -413,8 +429,7 @@ class IEKT(nn.Module):
             out_x = torch.cat([out_x_groundtruth, out_x_logits], dim=1)
 
             flip_prob_sens = self.model.pi_sens_func(out_x)
-            m_sens = Categorical(flip_prob_sens)
-            emb_a = m_sens.sample()
+            emb_a = self._policy_action(flip_prob_sens)
             emb = self.model.acq_matrix[emb_a, :]
 
             # Update knowledge state
@@ -475,7 +490,19 @@ class IEKT(nn.Module):
         data_len = data_new['cc'].shape[0]
         seq_len = data_new['cc'].shape[1]
 
-        seq_num = torch.where(data['qseqs'] != 0, 1, 0).sum(axis=-1) + 1
+        # Number of valid rollout steps per row. The rollout runs over
+        # data_new['cc'], which prepends one column to the shifted sequence, so a
+        # row with `masks.sum()` valid interactions has one more step than that.
+        #
+        # This was `(qseqs != 0).sum(-1) + 1`, which treats question id 0 as
+        # padding. Zero is a legitimate question id here -- padding is trailing
+        # zeros, not the value zero -- so the count came out wrong by a different
+        # amount on every row, depending on how many times that learner happened
+        # to answer question 0.
+        valid_mask = data.get('masks')
+        if valid_mask is None:
+            valid_mask = data['smasks']
+        seq_num = valid_mask.bool().long().sum(dim=-1) + 1
 
         emb_action_tensor = torch.stack(emb_action_list, dim=1)
         p_action_tensor = torch.stack(p_action_list, dim=1)
@@ -486,8 +513,6 @@ class IEKT(nn.Module):
         ground_truth_tensor = torch.stack(ground_truth_list, dim=1)
 
         loss_list = []
-        tracat_logits = []
-        tracat_ground_truth = []
 
         for i in range(data_len):
             this_seq_len = seq_num[i]
@@ -536,17 +561,30 @@ class IEKT(nn.Module):
             loss_sens = -torch.log(pi_a_sens) * advantage_sens
             loss_list.append(torch.sum(loss_sens))
 
-            this_prob = logits_tensor[i][0: this_seq_len]
-            this_ground_truth = ground_truth_tensor[i][0: this_seq_len]
+        # Scored positions come from smasks, not from a per-row length.
+        #
+        # data_new['cc'] is cseqs[:, :1] concatenated with shft_cseqs, so column
+        # j + 1 of the rollout predicts shft_rseqs[:, j] -- the target that
+        # smasks[:, j] marks. Column 0 predicts the learner's very first
+        # response, which no protocol scores.
+        #
+        # The previous code took a prefix `[0:seq_num[i]]` of the full rollout
+        # instead. That both included column 0 and ignored smasks, so it scored
+        # padding and the repeated-KC rows that `score_repeated_kc=False` drops.
+        # Measured on assist2009 fold 0, first batch of 64: 4556 positions where
+        # smasks selects 3886, 17% more. IEKT's AUC therefore covered a
+        # different set of positions than every other model in the same table.
+        scored = data['smasks'].bool()
+        y = logits_tensor[:, 1:][scored]
+        y_true = ground_truth_tensor[:, 1:][scored]
 
-            tracat_logits.append(this_prob)
-            tracat_ground_truth.append(this_ground_truth)
-
-        y = torch.cat(tracat_logits, dim=0)
-        y_true = torch.cat(tracat_ground_truth, dim=0)
         bce = BCELoss(y, y_true)
-        label_len = y_true.size(0)
+        label_len = max(y_true.size(0), 1)
         loss_l = sum(loss_list)
         loss = self.lamb * (loss_l / label_len) + bce
 
-        return y, y_true, loss
+        # Logits for the loss above (BCEWithLogitsLoss), probabilities for the
+        # caller. BaseTrainer._score_loader thresholds accuracy at `p >= 0.5`,
+        # which is only meaningful on a probability; returning raw linear output
+        # made every reported IEKT accuracy wrong.
+        return torch.sigmoid(y), y_true, loss
