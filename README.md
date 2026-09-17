@@ -20,11 +20,19 @@ layout.
 
 ## Quick Start
 
-Install the base dependencies:
+Install the base dependencies, then PyTorch for your machine:
 
 ```bash
 pip install -r requirements.txt
 ```
+
+```bash
+pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+```
+
+Use `.../whl/cpu` instead for a CPU-only machine. PyTorch is kept out of
+`requirements.txt` because the correct wheel depends on the CUDA version;
+`requirements-torch.txt` documents both options.
 
 Run a single-fold experiment:
 
@@ -46,6 +54,28 @@ python scripts/serve_web.py --host 127.0.0.1 --port 8000
 ```
 
 Then open `http://127.0.0.1:8000`.
+
+## Running The Tests
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+```bash
+pytest
+```
+
+Use pytest, not `python -m unittest`. Five test files are written as plain
+`test_` functions rather than `unittest.TestCase` subclasses, so unittest
+collects nothing from them and still reports success -- 16 cases were silently
+not running until this was noticed. `pytest.ini` pins collection to `tests/`,
+which also keeps it out of `data/`, `saved_model/` and `wandb/`.
+
+`tests/test_model_contracts.py` walks the model registry rather than naming
+models, so a newly registered model is checked automatically: registration,
+construction, a forward and backward pass, prediction/`smasks` alignment, finite
+gradients, and that a future response cannot move a past prediction. See
+docs/architecture.md for what it skips and why.
 
 ## Data Preparation
 

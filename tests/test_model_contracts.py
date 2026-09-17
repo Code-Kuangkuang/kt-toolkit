@@ -363,7 +363,7 @@ class ModelContractTest(unittest.TestCase):
                     self.assertTrue(
                         in_range,
                         f"{name}: predictions fall outside [0, 1] "
-                        f"(min {float(pred.min()):.4f}, max {float(pred.max()):.4f}), "
+                        f"(min {pred.detach().min():.4f}, max {pred.detach().max():.4f}), "
                         "so the head is not a probability and the 0.5 accuracy "
                         "threshold in _score_loader is meaningless for it.",
                     )

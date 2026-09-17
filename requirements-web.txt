@@ -1,2 +1,10 @@
-fastapi
-uvicorn[standard]
+# The optional job runner under webui/. Not needed to train from the CLI.
+#
+#   pip install -r requirements.txt -r requirements-torch.txt -r requirements-web.txt
+#
+# pydantic was missing here although webui/ imports it directly; it happened to
+# be present as a FastAPI dependency.
+
+fastapi==0.136.1
+pydantic==2.12.4
+uvicorn[standard]==0.46.0

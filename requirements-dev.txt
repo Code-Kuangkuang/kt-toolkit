@@ -1,0 +1,15 @@
+# Test runner and tooling.
+#
+#   pip install -r requirements-dev.txt
+#   pytest
+#
+# pytest is not optional in practice: five test files
+# (test_all_in_one_modes, test_dgekt, test_hdkt, test_hdkt_backbones,
+# test_keenkt -- 16 cases) are written as plain functions rather than
+# unittest.TestCase subclasses, so `python -m unittest` collects zero tests from
+# them and reports success. They were silently not running until 2026-09-17.
+
+pytest==9.1.1
+
+# Used only by scripts/extract_pdf_text.py and soft_copyright/.
+pypdf==6.8.0

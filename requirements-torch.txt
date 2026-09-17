@@ -1,0 +1,20 @@
+# PyTorch, kept separate because the wheel depends on the machine.
+#
+# CUDA 12.8 (what this repository is developed and tested on):
+#   pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+#
+# CPU only, for a laptop or a CI runner:
+#   pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+#
+# The bare requirement below resolves to whatever default wheel PyPI offers,
+# which is usually the CUDA build on Linux and the CPU build on Windows. Prefer
+# one of the explicit commands above.
+#
+# Note before planning a CPU-only CI job: thirteen model files hold a
+# module-level `device = torch.device("cuda" if torch.cuda.is_available() else
+# "cpu")` and use it instead of the device passed in, so on a machine that has a
+# GPU they cannot be forced onto CPU. A CPU-only runner has no GPU at all and is
+# therefore fine; a developer machine with a GPU is not. See "Model Contract
+# Tests" in docs/architecture.md.
+
+torch==2.8.0
