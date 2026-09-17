@@ -254,6 +254,13 @@ def train_one_fold(
             f"emb_path={booster_info.get('emb_path', '')}"
         )
 
+    # Which splits this run's derived inputs were fitted from, recorded in the
+    # protocol block. Set at the site that does the fitting rather than from a
+    # lookup table, because a table drifts away from the code -- which is the
+    # failure mode of the membership sets above.
+    feature_fit_scope = "none"
+    graph_scope = "none"
+
     lpkt_time_idx_maps = None
     if model_name in {"lpkt", "hdkt"}:
         train_time_folds = (
@@ -272,6 +279,10 @@ def train_one_fold(
         if model_name == "hdkt" or resolved_dataset_mode == "all_in_one":
             dataset_cfg_local["time_index_scope"] = "train_folds_only"
             dataset_cfg_local["time_index_folds"] = train_time_folds
+            feature_fit_scope = "train_folds"
+        else:
+            # generate_time2idx with folds=None reads every split.
+            feature_fit_scope = "train_valid_test"
     if model_name == "hawkes" and dataset_cfg_local.get("num_q", 0) <= 0:
         raise ValueError(
             f"Hawkes requires question ids, but dataset {dataset_name} has num_q={dataset_cfg_local.get('num_q')}."
@@ -297,6 +308,9 @@ def train_one_fold(
             gap_files,
             dataset_cfg_local["input_type"],
         )
+        # gap_files above is [train_valid, test] with no fold filter, so the
+        # embedding table sizes are a maximum over every split.
+        feature_fit_scope = "train_valid_test"
         model_cfg_local.update(gap_stats)
         dataset_cfg_local.update(gap_stats)
         model_cfg_local["use_timestamps"] = True
@@ -312,6 +326,7 @@ def train_one_fold(
             difficulty_file_key,
             "train_valid_file",
         )
+        feature_fit_scope = "train_folds"
         dimkt_difficulty_maps = compute_dimkt_difficulty_maps(
             dataset_cfg_local["dpath"],
             difficulty_file,
@@ -331,6 +346,7 @@ def train_one_fold(
             train_file_key,
             "train_valid_file",
         )
+        feature_fit_scope = "train_folds"
         hqaf_feature_maps = compute_hqaf_feature_maps(
             dataset_cfg_local["dpath"],
             train_file,
@@ -395,6 +411,10 @@ def train_one_fold(
         ):
             association_files.append(test_graph_file)
         train_folds = sorted(set(dataset_cfg_local.get("folds", [])) - {int(fold_id)})
+        # The hypergraph itself is counted from the training folds, but
+        # association_files above adds the test file's question-concept pairs
+        # whenever include_test_question_metadata is on, which is the default.
+        graph_scope = "train_valid_test" if association_files else "train_folds"
         hypergraph, transition_out, transition_in, dgekt_graph_info = build_dgekt_graphs(
             dataset_cfg_local["dpath"],
             graph_file,
@@ -413,6 +433,11 @@ def train_one_fold(
 
     # Applied last so a spec wins over the legacy chain during the migration.
     model_kwargs.update(spec_inputs.model_kwargs)
+    # A spec reports its own fit scope the same way it reports everything else.
+    feature_fit_scope = spec_inputs.run_config_extras.pop(
+        "feature_fit_scope", feature_fit_scope
+    )
+    graph_scope = spec_inputs.run_config_extras.pop("graph_scope", graph_scope)
 
     # Every spec has run by now, so the RNG stream from here on is identical to
     # what it was before the migration. Nothing below may consume randomness
@@ -611,6 +636,8 @@ def train_one_fold(
             dataset_cfg_local.get("max_concepts"),
             model_cfg_local.get("concept_mode"),
             eval_window=bool(train_cfg_local.get("eval_window", True)),
+            feature_fit_scope=feature_fit_scope,
+            graph_scope=graph_scope,
         ),
         "use_wandb": bool(wandb_cfg),
         "add_uuid": bool(add_uuid),

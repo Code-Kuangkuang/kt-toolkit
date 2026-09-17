@@ -82,15 +82,41 @@ def resolve_concept_mode(model_name, override=None):
     return "multi" if str(model_name).lower() in MULTI_CONCEPT_MODELS else "first"
 
 
+FIT_SCOPES = ("none", "train_folds", "train_valid_test")
+
+
 def protocol_stamp(model_name, dataset_mode, max_concepts, concept_mode_override=None,
-                   eval_window=True):
+                   eval_window=True, feature_fit_scope="none", graph_scope="none"):
     """The evaluation protocol a run actually used, for run_config.json.
 
     Two runs are only comparable when these values match.  Recording them per
     run is what lets a finished comparison table be checked after the fact,
     instead of trusting that every row was produced the same way -- which is
     how a table came to mix `multi` and `first` concept handling.
+
+    `feature_fit_scope` and `graph_scope` record which splits the run's derived
+    inputs were fitted from -- difficulty maps, gap dimensions, time buckets,
+    concept graphs.  None of these read responses, so none of them is label
+    leakage; what they decide is whether the run is transductive, that is
+    whether the model's structure was built already knowing what the test set
+    contains.  The scopes are genuinely mixed across models, so they are
+    recorded rather than assumed:
+
+      dimkt, hqaf, lpkt/hdkt   train_folds       already fold-clean
+      dkt_forget               train_valid_test  gap dimensions max over all splits
+      gkt                      train_valid_test  transition counts include test
+      dgekt                    train_valid_test  test question metadata by default
+      everything else          none              fits nothing from the data
+
+    These are descriptive.  Changing the behaviour would be a deliberate
+    deviation from pyKT, which does the same in all three cases; recording it
+    costs nothing and makes the question answerable from an artifact.
     """
+    if feature_fit_scope not in FIT_SCOPES or graph_scope not in FIT_SCOPES:
+        raise ValueError(
+            f"fit scopes must be one of {FIT_SCOPES}, got "
+            f"feature_fit_scope={feature_fit_scope!r}, graph_scope={graph_scope!r}."
+        )
     from datasets.kt_dataset import SCORE_REPEATED_KC
 
     width = int(max_concepts or 1)
@@ -109,6 +135,10 @@ def protocol_stamp(model_name, dataset_mode, max_concepts, concept_mode_override
         "score_repeated_kc": bool(SCORE_REPEATED_KC),
         # False means this run has no pykt-comparable windowed number.
         "eval_window": bool(eval_window),
+        # Which splits the run's derived inputs were fitted from. See above:
+        # descriptive, not a claim that any of it is correct.
+        "feature_fit_scope": feature_fit_scope,
+        "graph_scope": graph_scope,
     }
 
 

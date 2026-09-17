@@ -160,7 +160,17 @@ class GKT(nn.Module):
                     tofile=graph_file,
                 )
             tensor = graph.float() if _torch.is_tensor(graph) else _torch.tensor(graph).float()
-            return ModelInputs(model_kwargs={"graph": tensor})
+            return ModelInputs(
+                model_kwargs={"graph": tensor},
+                # A dense graph is all ones and reads nothing; a transition graph
+                # counts from the train and test sequence files, with no fold
+                # filter, so the run is transductive. Recorded in the protocol
+                # block rather than changed: pyKT passes both files too, and
+                # deviating would cost comparability. No responses are read.
+                run_config_extras={
+                    "graph_scope": "none" if graph_type == "dense" else "train_valid_test"
+                },
+            )
 
     def __init__(self, num_c, hidden_dim, emb_size, graph_type="dense", graph=None, dropout=0.5, emb_type="qid", emb_path="", bias=True, **kwargs):
         super(GKT, self).__init__()

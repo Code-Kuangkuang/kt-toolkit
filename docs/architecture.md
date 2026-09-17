@@ -110,6 +110,35 @@ Each run therefore records a `protocol` block in `run_config.json`:
 | `max_concepts` | KC slots per question |
 | `score_repeated_kc` | `true` reproduces pyKT's behaviour, which scores duplicated KC rows |
 | `eval_window` | whether the pyKT-comparable windowed test metric was computed |
+| `feature_fit_scope` | which splits the run's derived features were fitted from |
+| `graph_scope` | the same, for a concept graph |
+
+The last two are `none`, `train_folds` or `train_valid_test`, and they are
+descriptive rather than a claim that the value is correct. None of the features
+in question reads responses, so none of it is label leakage; what the scope
+decides is whether a run is **transductive** -- whether the model's structure was
+built already knowing what the test set contains, which is not a thing you have
+in deployment.
+
+The scopes are genuinely mixed:
+
+| Model | Scope | Why |
+|---|---|---|
+| `dimkt`, `hqaf`, `lpkt`/`hdkt` | `train_folds` | already pass `folds=train_folds` |
+| `dkt_forget` | `train_valid_test` | gap dimensions are a max over every split |
+| `gkt` (transition) | `train_valid_test` | transition counts include the test file |
+| `dgekt` | `train_valid_test` | `include_test_question_metadata` on by default |
+| everything else | `none` | derives nothing from the data |
+
+pyKT does the same in all three transductive cases -- checked against its
+`init_model.py` and `init_dataset.py` -- so changing the behaviour means losing
+comparability with every published baseline, the same trade as the ASSISTments
+scaffolding filter. Recording it costs nothing and makes the question answerable
+from an artifact.
+
+The value is set at the site that does the fitting, not from a lookup table,
+because a table drifts from the code. A model that has moved to an `Inputs` spec
+reports its own through `run_config_extras`, as `gkt` does.
 
 `datasets/init_dataset.py::protocol_stamp` builds it. Before putting two runs in
 the same table, check that their `protocol` blocks are identical --
