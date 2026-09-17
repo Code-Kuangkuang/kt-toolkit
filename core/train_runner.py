@@ -69,13 +69,34 @@ ALL_IN_ONE_MODELS = {
 ONE_BY_ONE_MODELS = {"hawkes"}
 
 
-def _resolve_dataset_mode(model_name, train_cfg, model_cfg, overrides=None):
-    """Resolve data mode with CLI > model config > compatibility defaults."""
+def resolve_dataset_mode(model_name, train_cfg, model_cfg, overrides=None, spec=None):
+    """Resolve the data mode.
+
+    Priority, highest first:
+
+      1. CLI override
+      2. the model's config block
+      3. the model's `Inputs.dataset_mode` declaration
+      4. the ALL_IN_ONE_MODELS / ONE_BY_ONE_MODELS sets, which the declaration
+         above is progressively replacing
+      5. the global training config
+
+    The spec is consulted ahead of the membership sets so that a model moved to
+    an `Inputs` class stops depending on them. Passing `spec=None` keeps the
+    pre-migration behaviour, which is what callers that have not looked the
+    model up yet get.
+
+    Public because the contract tests have to resolve the mode exactly as the
+    runner does; picking a mode independently means testing a model in a
+    configuration that never occurs.
+    """
     overrides = overrides or {}
     if overrides.get("dataset_mode") is not None:
         mode = overrides["dataset_mode"]
     elif model_cfg.get("dataset_mode") is not None:
         mode = model_cfg["dataset_mode"]
+    elif spec is not None and getattr(spec, "dataset_mode", None) is not None:
+        mode = spec.dataset_mode
     elif model_name in ALL_IN_ONE_MODELS:
         mode = "all_in_one"
     elif model_name in ONE_BY_ONE_MODELS:
@@ -88,6 +109,10 @@ def _resolve_dataset_mode(model_name, train_cfg, model_cfg, overrides=None):
             "expected 'one_by_one' or 'all_in_one'."
         )
     return mode
+
+
+# Kept so existing callers and tests that used the private name keep working.
+_resolve_dataset_mode = resolve_dataset_mode
 
 
 def _fmt(value):
@@ -169,8 +194,24 @@ def train_one_fold(
             dpath = os.path.join(root_dir, dpath)
         dataset_cfg_local["dpath"] = os.path.normpath(dpath)
 
-    resolved_dataset_mode = _resolve_dataset_mode(
-        model_name, train_cfg_local, model_cfg_local, overrides
+    # Migration in progress: models that declare an `Inputs` spec get their
+    # extra inputs from it, and the `model_name` chain below is skipped for
+    # them. See "Model Input Specs" in docs/architecture.md; the chain shrinks by
+    # one model at a time, and each move is checked for bit-identical metrics by
+    # research/check_input_refactor.py.
+    #
+    # Looked up before the mode is resolved, because the spec is allowed to
+    # declare that mode.
+    if model_name not in MODEL_REGISTRY.get_all():
+        raise KeyError(
+            f"Model {model_name!r} is not registered. Registered models: "
+            f"{', '.join(sorted(MODEL_REGISTRY.get_all()))}. A model class only "
+            "registers once its module is imported -- check models/__init__.py."
+        )
+    spec = spec_for(MODEL_REGISTRY.get(model_name))
+
+    resolved_dataset_mode = resolve_dataset_mode(
+        model_name, train_cfg_local, model_cfg_local, overrides, spec=spec
     )
     train_cfg_local["dataset_mode"] = resolved_dataset_mode
     # A per-model opt-out for the windowed test set, declared in the model's
@@ -179,18 +220,6 @@ def train_one_fold(
         train_cfg_local["eval_window"] = bool(model_cfg_local["eval_window"])
     model_cfg_local["dataset_mode"] = resolved_dataset_mode
 
-    # Migration in progress: models that declare an `Inputs` spec get their
-    # extra inputs from it, and the `model_name` chain below is skipped for
-    # them. See "Known Structural Debt" in docs/architecture.md; the chain
-    # shrinks by one model at a time, and each move is checked for bit-identical
-    # metrics by research/check_input_refactor.py.
-    if model_name not in MODEL_REGISTRY.get_all():
-        raise KeyError(
-            f"Model {model_name!r} is not registered. Registered models: "
-            f"{', '.join(sorted(MODEL_REGISTRY.get_all()))}. A model class only "
-            "registers once its module is imported -- check models/__init__.py."
-        )
-    spec = spec_for(MODEL_REGISTRY.get(model_name))
     spec_ctx = RunContext(
         model_name=model_name,
         dataset_name=dataset_name,
@@ -653,8 +682,13 @@ def train_one_fold(
             print(f"Loaded best model from epoch {trainer.best_metrics.get('epoch', '?')}")
 
 
+    # The last-epoch checkpoint is a diagnostic -- how far the model drifted
+    # after its best validation epoch -- not a reportable result. It is off by
+    # default so the test set is touched exactly once per run, on the
+    # best-validation checkpoint; `eval_last_epoch: true` in the training config
+    # turns it back on.
     last_test_metrics = None
-    if test_loader is not None:
+    if test_loader is not None and bool(train_cfg_local.get("eval_last_epoch", False)):
         trainer.model.load_state_dict(torch.load(last_epoch_path, weights_only=True))
         print(f"Loaded last epoch model for test evaluation")
         last_test_metrics = trainer.evaluate_test()

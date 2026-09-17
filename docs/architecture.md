@@ -127,6 +127,13 @@ because a number you can watch is a number you can tune against, and the banner
 does not change what a person does with it. The canonical selection metric is
 validation AUC.
 
+The last-epoch checkpoint is also scored, but only when `eval_last_epoch: true`
+is set in the training config. It answers a diagnostic question -- how far the
+model drifted after its best validation epoch -- and is not a reportable result,
+so by default a run touches the test set exactly once. With the flag off,
+`last_test_auc` and `last_test_acc` are simply absent from `best_metrics.json`
+rather than present and ignorable.
+
 A metric that cannot be computed is `None`, never a sentinel number. `-1` used
 to stand in when `roc_auc_score` raised, which meant a single unscorable fold
 was averaged into the cross-validation mean as a real score -- roughly -0.35 on
@@ -183,9 +190,22 @@ class GKT(nn.Module):
 `prepare` receives a `RunContext` (resolved dataset mode, this fold's config
 copies, a file resolver, `train_folds()`) and returns a `ModelInputs` carrying
 `model_kwargs`, `dataset_kwargs`, `model_cfg_updates`, `dataset_cfg_updates` and
-`run_config_extras`. `validate` covers the declarative cases -- dataset mode and
-the question-id requirement -- and `post_build` handles the one model that needs
-surgery after construction.
+`run_config_extras`. `validate` covers the question-id requirement, and
+`post_build` handles the one model that needs surgery after construction.
+
+`Inputs.dataset_mode` is consulted by `resolve_dataset_mode`, which the runner
+calls after looking the spec up, in this order:
+
+1. CLI override
+2. the model's config block
+3. `Inputs.dataset_mode`
+4. `ALL_IN_ONE_MODELS` / `ONE_BY_ONE_MODELS`
+5. the global training config
+
+The declaration sits above the membership sets so that moving a model to a spec
+releases it from them. Anything that needs the resolved mode -- including the
+contract tests -- must call `resolve_dataset_mode` rather than derive it, or it
+runs the model in a configuration that never occurs.
 
 Three rules the interface exists to enforce:
 
@@ -252,10 +272,24 @@ real sequences, `dkt_pebg` a pretrained booster, `hawkes` the double-precision
 setup the runner applies. The skip list is the honest statement of what is still
 uncovered.
 
-Two violations are recorded rather than fixed, in `KNOWN_ALIGNMENT_VIOLATIONS`
-and `KNOWN_RANGE_VIOLATIONS`. The tests assert that these still fail, so an entry
-must be deleted when the model is fixed, and a model that starts violating
-without an entry breaks the build. Both are IEKT:
+Determinism is checked before causality, not inside it. A non-deterministic
+forward makes the causality result unreadable: a difference after flipping a
+response could be the leak or could be the noise. When LPKT first failed the
+causality check the difference was attributed to cuBLAS reduction ordering,
+which was wrong -- `models/lpkt.py:252` calls `nn.init.xavier_uniform_` inside
+`forward` whenever `initial_knowledge` is `None`, re-drawing the entire initial
+state on every pass. Seeding made it reproduce exactly, which was the signal.
+A separate determinism test says so in one line.
+
+That LPKT path is reachable rather than hypothetical: `initial_knowledge` is a
+learned parameter only when `use_runtime_concepts` is on, which the runner ties
+to `all_in_one`. Running LPKT `one_by_one` re-randomises its initial knowledge
+state every forward, so its evaluation is not reproducible.
+
+Three violations are recorded rather than fixed, in `KNOWN_ALIGNMENT_VIOLATIONS`,
+`KNOWN_RANGE_VIOLATIONS` and `KNOWN_NONDETERMINISM`. The tests assert that these
+still fail, so an entry must be deleted when the model is fixed, and a model that
+starts violating without an entry breaks the build. All three are IEKT:
 
 - `models/iekt.py:478` computes `seq_num = (qseqs != 0).sum() + 1`. The `+1`
   counts one position past the real sequence, and `!= 0` treats question id 0 as
@@ -265,10 +299,26 @@ without an entry breaks the build. Both are IEKT:
 - `models/iekt.py:41-47` returns a bare `nn.Linear` output with no sigmoid, so
   predictions are unbounded. AUC is rank-based and unaffected, but the `p >= 0.5`
   accuracy threshold in `_score_loader` is meaningless for a non-probability.
+- `models/iekt.py:380` and `:416` call `Categorical(...).sample()` with no
+  `self.training` guard, so evaluation draws a fresh policy rollout each time.
+  The same batch scored twice in eval differs by 0.287, which means every
+  reported IEKT metric is one draw from a distribution rather than a value.
 
-Two things the harness had to match exactly, both found by getting them wrong:
-a real batch has `rseqs` as float32 and `masks`/`smasks` as bool, and it carries
-`seq_len - 1` positions, because the dataset builds inputs from `cur[:-1]`.
+Four things the harness had to match exactly, each found by getting it wrong and
+reading the resulting model-side error:
+
+- `rseqs` is float32 and `masks`/`smasks` are bool.
+- A batch carries `seq_len - 1` positions, since the dataset builds inputs from
+  `cur[:-1]`.
+- The dataset mode must come from `resolve_dataset_mode`. Deriving it from
+  `Inputs.dataset_mode` alone put every model except `gkt` on `one_by_one`, and
+  built LPKT with `use_runtime_concepts` off -- a path no real run takes.
+- 3-D concepts appear only when the mode is `all_in_one` *and* the model is in
+  `MULTI_CONCEPT_MODELS`. `rekt` and `gkt` keep per-KC state indexed by a single
+  skill id, so they are fed `cseqs[:, 0]` even under `all_in_one`.
+
+The last two are the same lesson: anything the runner or the loader decides has
+to be asked for, not reproduced.
 
 Thirteen model files hold a module-level
 `device = torch.device("cuda" if torch.cuda.is_available() else "cpu")` and use

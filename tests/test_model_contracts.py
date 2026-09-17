@@ -48,7 +48,8 @@ import models  # noqa: F401  -- registers models
 from core.factory import build_model, build_trainer
 from core.model_inputs import spec_for
 from core.registry import MODEL_REGISTRY, TRAINER_REGISTRY
-from core.train_runner import MODEL_NAME_ALIASES
+from core.train_runner import MODEL_NAME_ALIASES, resolve_dataset_mode
+from datasets.init_dataset import resolve_concept_mode
 
 KT_CONFIG = json.loads((ROOT / "configs" / "kt_config.json").read_text(encoding="utf-8"))
 
@@ -89,13 +90,9 @@ NEEDS_REAL_ARTEFACTS = {
     "hawkes": "runs in double precision with its own init, applied by train_runner",
 }
 
-# Constructor arguments train_runner computes from data, which the runner injects
-# via its model_name chain. Sizes here are arbitrary but must exceed the ids the
-# synthetic batch generates.
-# Models known to score a different set of positions than `smasks` selects.
-# Recorded rather than skipped: the test asserts these still violate, so the
-# entry has to be deleted when the model is fixed, and a model that starts
-# violating without an entry fails.
+# Violations recorded rather than skipped: the tests assert these still fail, so
+# an entry has to be deleted when the model is fixed, and a model that starts
+# violating without an entry breaks the build.
 KNOWN_RANGE_VIOLATIONS = {
     "iekt": (
         "models/iekt.py:41-47 -- the prediction head is `self.out(self.dropout(x))` "
@@ -104,6 +101,18 @@ KNOWN_RANGE_VIOLATIONS = {
         "(measured [-0.162, 0.379] at init). AUC is rank-based and unaffected, but "
         "BaseTrainer._score_loader thresholds accuracy at `p >= 0.5`, which has no "
         "meaning for a non-probability, so every reported IEKT accuracy is wrong."
+    ),
+}
+
+KNOWN_NONDETERMINISM = {
+    "iekt": (
+        "models/iekt.py:380 and :416 draw actions with Categorical(...).sample() "
+        "on every forward, with no `self.training` guard, so evaluation samples "
+        "a fresh policy rollout each time. Measured: the same batch scored twice "
+        "in eval mode differs by 0.287 in prediction space. Every reported IEKT "
+        "metric is therefore one draw from a distribution rather than a value, "
+        "and re-running the same checkpoint gives a different number. A fix "
+        "would take the argmax (or the policy mean) when self.training is False."
     ),
 }
 
@@ -122,12 +131,62 @@ KNOWN_ALIGNMENT_VIOLATIONS = {
     ),
 }
 
+# Constructor arguments the runner injects from its model_name chain rather than
+# from the config block. Sizes are arbitrary but must exceed the ids the
+# synthetic batch generates.
+#
+# Having to restate them here is the cost of that chain still existing: a model
+# built without them is built in a configuration no real run produces, and the
+# test then measures something that never happens. Each entry disappears when
+# its model moves to an `Inputs` spec.
 COMPUTED_CONSTRUCTOR_ARGS = {
     "dkt_forget": {"num_rgap": 8, "num_sgap": 8, "num_pcount": 8},
     "lpkt": {"num_at": 128, "num_it": 16},
     "hdkt": {"num_at": 128, "num_it": 16},
     "hqaf": {"num_type": 16},
 }
+
+# train_runner.py:293 sets this from the resolved mode, and it decides whether
+# LPKT's initial knowledge state is a learned parameter or noise re-drawn on
+# every forward. Omitting it put LPKT on a path real runs never take.
+RUNTIME_CONCEPT_MODELS = {"lpkt"}
+
+# train_runner.py:295 injects num_pid for these from dataset_cfg["num_q"].
+NEEDS_NUM_PID = {
+    "simplekt", "ukt", "stablekt", "sparsekt", "robustkt", "dtransformer",
+    "lefokt_akt", "hqaf",
+}
+
+
+def runner_dataset_mode(model_name):
+    """The mode the runner would resolve, rather than one the test invents.
+
+    `spec.dataset_mode or "one_by_one"` looked reasonable and was wrong: only
+    gkt declares a spec so far, so every other model fell through to
+    one_by_one, while train_config sets all_in_one globally and
+    ALL_IN_ONE_MODELS pins eighteen more.
+    """
+    return resolve_dataset_mode(
+        model_name,
+        KT_CONFIG.get("train_config", {}),
+        KT_CONFIG.get(model_name, {}),
+        overrides=None,
+        spec=spec_for(MODEL_REGISTRY.get(model_name)),
+    )
+
+
+def runner_concept_shape(model_name, dataset_mode):
+    """3-D concepts only when the dataset would actually produce them.
+
+    all_in_one is not enough. Models outside MULTI_CONCEPT_MODELS -- rekt and
+    gkt keep per-KC state arrays indexed by a single skill id -- are fed
+    `cseqs[:, 0]`, so they see 2-D concepts even in all_in_one. Handing rekt a
+    [B, T, K] tensor fails inside models/rekt.py:102 rather than anywhere the
+    harness can explain.
+    """
+    override = KT_CONFIG.get(model_name, {}).get("concept_mode")
+    multi = resolve_concept_mode(model_name, override) == "multi"
+    return "3d" if (dataset_mode == "all_in_one" and multi) else "2d"
 
 
 def config_for(model_name):
@@ -145,7 +204,7 @@ def config_for(model_name):
     return cfg
 
 
-def synth_batch(dataset_mode, seq_len=SEQ_POSITIONS, device=DEVICE):
+def synth_batch(dataset_mode, concept_shape="3d", seq_len=SEQ_POSITIONS, device=DEVICE):
     """A batch shaped like KTDataset.__getitem__ after collation.
 
     Dtypes are the ones a real loader produces, checked against an assist2009
@@ -163,8 +222,8 @@ def synth_batch(dataset_mode, seq_len=SEQ_POSITIONS, device=DEVICE):
     def ids(high, shape):
         return torch.randint(0, high, shape, generator=g).long().to(device)
 
-    concept_shape = (
-        (BATCH, seq_len, MAX_CONCEPTS) if dataset_mode == "all_in_one" else (BATCH, seq_len)
+    concept_dims = (
+        (BATCH, seq_len, MAX_CONCEPTS) if concept_shape == "3d" else (BATCH, seq_len)
     )
     responses = torch.randint(0, 2, (BATCH, seq_len), generator=g).float().to(device)
     shft_responses = torch.randint(0, 2, (BATCH, seq_len), generator=g).float().to(device)
@@ -172,8 +231,8 @@ def synth_batch(dataset_mode, seq_len=SEQ_POSITIONS, device=DEVICE):
     batch = {
         "qseqs": ids(NUM_Q, (BATCH, seq_len)),
         "shft_qseqs": ids(NUM_Q, (BATCH, seq_len)),
-        "cseqs": ids(NUM_C, concept_shape),
-        "shft_cseqs": ids(NUM_C, concept_shape),
+        "cseqs": ids(NUM_C, concept_dims),
+        "shft_cseqs": ids(NUM_C, concept_dims),
         "rseqs": responses,
         "shft_rseqs": shft_responses,
         "masks": torch.ones(BATCH, seq_len, dtype=torch.bool, device=device),
@@ -215,6 +274,10 @@ def make_model_and_trainer(model_name, dataset_mode, device=DEVICE):
 
     kwargs = dict(cfg)
     kwargs.update(COMPUTED_CONSTRUCTOR_ARGS.get(model_name, {}))
+    if model_name in NEEDS_NUM_PID:
+        kwargs.setdefault("num_pid", NUM_Q)
+    if model_name in RUNTIME_CONCEPT_MODELS:
+        kwargs["use_runtime_concepts"] = dataset_mode == "all_in_one"
     kwargs.update(spec.prepare(_MinimalContext(model_name, dataset_mode)).model_kwargs)
 
     model = build_model(
@@ -320,10 +383,9 @@ class ModelContractTest(unittest.TestCase):
                 skipped.append(name)
                 continue
             with self.subTest(model=name):
-                spec = spec_for(MODEL_REGISTRY.get(name))
-                mode = spec.dataset_mode or "one_by_one"
+                mode = runner_dataset_mode(name)
                 model, trainer = make_model_and_trainer(name, mode)
-                batch = synth_batch(mode)
+                batch = synth_batch(mode, runner_concept_shape(name, mode))
 
                 pred, target, loss = forward(trainer, batch)
 
@@ -387,28 +449,73 @@ class ModelContractTest(unittest.TestCase):
             f"{len(skipped)} skipped ({', '.join(skipped)})"
         )
 
-    def test_5_a_future_response_cannot_move_a_past_prediction(self):
+    def test_5_inference_is_deterministic_in_eval_mode(self):
+        """Two forwards over the same batch, in eval, must give the same answer.
+
+        This runs before the causality check and not as part of it, because a
+        non-deterministic forward makes that check unreadable: any difference
+        after flipping a response could be the leak or could be the noise. When
+        LPKT first failed the causality check I attributed the difference to
+        cuBLAS reduction ordering, which was wrong -- models/lpkt.py:252 calls
+        nn.init.xavier_uniform_ inside forward whenever initial_knowledge is
+        None, re-drawing the whole initial state on every pass. Seeding made it
+        reproduce exactly, which was the signal, and a separate determinism test
+        would have said so immediately.
+
+        That path is reachable: initial_knowledge is a learned parameter only
+        when use_runtime_concepts is on, which the runner ties to all_in_one. In
+        one_by_one LPKT re-randomises its initial knowledge state every forward,
+        so its evaluation is not reproducible.
+        """
+        for name in self.model_names:
+            if name in NEEDS_REAL_ARTEFACTS:
+                continue
+            with self.subTest(model=name):
+                mode = runner_dataset_mode(name)
+                _, trainer = make_model_and_trainer(name, mode)
+                trainer.model.eval()
+                batch = synth_batch(mode, runner_concept_shape(name, mode))
+
+                with torch.no_grad():
+                    first, _, _ = forward(trainer, batch)
+                    second, _, _ = forward(trainer, batch)
+
+                drift = float((first - second).abs().max())
+                if name in KNOWN_NONDETERMINISM:
+                    self.assertGreater(
+                        drift, 1e-6,
+                        f"{name} is now deterministic in eval. If that was the "
+                        f"intent, delete its KNOWN_NONDETERMINISM entry.\n"
+                        f"{KNOWN_NONDETERMINISM[name]}",
+                    )
+                else:
+                    self.assertLessEqual(
+                        drift, 1e-6,
+                        f"{name}: the same batch scored twice in eval mode differs "
+                        f"by {drift:.3e}. Evaluation is not reproducible; look for "
+                        "an nn.init call or a sampling step inside forward that is "
+                        "not gated on self.training.",
+                    )
+
+    def test_6_a_future_response_cannot_move_a_past_prediction(self):
         """The leak that matters most: prediction at t must not see response t.
 
         `rseqs[:, -1]` is the last input response and legitimately feeds only the
         final prediction. Flipping it must leave every earlier prediction alone.
 
-        The threshold is calibrated per model rather than fixed. Repeating the
-        same forward on CUDA is not bit-exact -- cuBLAS reductions reorder -- so
-        the test first measures that noise by running the identical batch twice,
-        then requires the flip to stay inside it. A fixed tolerance would either
-        miss a small leak or flag float noise as one, depending on the model.
+        Determinism is established by the test above, so any movement here is
+        attributable. The threshold stays calibrated rather than fixed, because
+        CUDA reductions can still reorder at the 1e-7 level.
         """
         for name in self.model_names:
             if name in NEEDS_REAL_ARTEFACTS or name in KNOWN_ALIGNMENT_VIOLATIONS:
                 continue
             with self.subTest(model=name):
-                spec = spec_for(MODEL_REGISTRY.get(name))
-                mode = spec.dataset_mode or "one_by_one"
+                mode = runner_dataset_mode(name)
                 _, trainer = make_model_and_trainer(name, mode)
                 trainer.model.eval()
 
-                batch = synth_batch(mode)
+                batch = synth_batch(mode, runner_concept_shape(name, mode))
                 flipped = dict(batch)
                 flipped["rseqs"] = batch["rseqs"].clone()
                 flipped["rseqs"][:, -1] = 1 - flipped["rseqs"][:, -1]
