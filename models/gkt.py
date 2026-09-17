@@ -139,13 +139,23 @@ class GKT(nn.Module):
             )
             dpath = ctx.dataset_cfg["dpath"]
 
+            # AGENTS.md requires a derived feature to be fitted on the current
+            # fold's training rows. The graph is part of the model's structure,
+            # so counting it from the test file too makes the run transductive.
+            # `pykt_transductive: true` restores pyKT's behaviour for tables that
+            # have to line up with its published numbers.
+            transductive = bool(ctx.train_cfg.get("pykt_transductive", False))
+            folds = None if transductive else ctx.train_folds()
+
             # A dense graph is all ones and reads no data, so it needs no
-            # fingerprint; a transition graph is counted from the files.
+            # fingerprint; a transition graph is counted from the files, and its
+            # cache must separate the two scopes and the fold it was built for.
             if graph_type == "dense":
                 graph_file = "gkt_graph_dense.npz"
             else:
                 digest = cls._source_fingerprint(dpath, [train_file, test_file])
-                graph_file = f"gkt_graph_{graph_type}_{digest}.npz"
+                scope = "tvt" if transductive else f"tf{ctx.fold_id}"
+                graph_file = f"gkt_graph_{graph_type}_{scope}_{digest}.npz"
 
             graph_path = os.path.join(dpath, graph_file)
             if os.path.exists(graph_path):
@@ -158,18 +168,16 @@ class GKT(nn.Module):
                     test_file,
                     graph_type=graph_type,
                     tofile=graph_file,
+                    folds=folds,
                 )
             tensor = graph.float() if _torch.is_tensor(graph) else _torch.tensor(graph).float()
+            if graph_type == "dense":
+                graph_scope = "none"  # all ones; no split contributes
+            else:
+                graph_scope = "train_valid_test" if transductive else "train_folds"
             return ModelInputs(
                 model_kwargs={"graph": tensor},
-                # A dense graph is all ones and reads nothing; a transition graph
-                # counts from the train and test sequence files, with no fold
-                # filter, so the run is transductive. Recorded in the protocol
-                # block rather than changed: pyKT passes both files too, and
-                # deviating would cost comparability. No responses are read.
-                run_config_extras={
-                    "graph_scope": "none" if graph_type == "dense" else "train_valid_test"
-                },
+                run_config_extras={"graph_scope": graph_scope},
             )
 
     def __init__(self, num_c, hidden_dim, emb_size, graph_type="dense", graph=None, dropout=0.5, emb_type="qid", emb_path="", bias=True, **kwargs):

@@ -283,7 +283,6 @@
     "dropout": 0.0,
     "kd_lambda": 5e-06,
     "kd_temperature": 0.5,
-    "include_test_question_metadata": true,
     "emb_type": "qid"
   },
   "iekt": {

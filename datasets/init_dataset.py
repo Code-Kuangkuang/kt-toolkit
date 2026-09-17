@@ -172,6 +172,7 @@ def build_dataloaders(dataset_name, data_config, fold, batch_size, model_name=No
     include_history = kwargs.get("include_history", False)
     include_hqaf_attrs = kwargs.get("include_hqaf_attrs", False)
     hqaf_feature_maps = kwargs.get("hqaf_feature_maps")
+    dkt_forget_caps = kwargs.get("dkt_forget_caps")
     train_label_flip_ratio = float(kwargs.get("train_label_flip_ratio", 0.0))
     train_label_flip_seed = int(kwargs.get("train_label_flip_seed", 3407))
     model_name_lower = (model_name or "").lower()
@@ -192,6 +193,7 @@ def build_dataloaders(dataset_name, data_config, fold, batch_size, model_name=No
             include_dkt_forget=include_dkt_forget, difficulty_maps=difficulty_maps,
             include_history=include_history,
             include_hqaf_attrs=include_hqaf_attrs, hqaf_feature_maps=hqaf_feature_maps,
+            dkt_forget_caps=dkt_forget_caps,
         )
         valid_ds = KTDataset(
             train_valid_path, cfg["input_type"], {fold},
@@ -199,6 +201,7 @@ def build_dataloaders(dataset_name, data_config, fold, batch_size, model_name=No
             include_dkt_forget=include_dkt_forget, difficulty_maps=difficulty_maps,
             include_history=include_history,
             include_hqaf_attrs=include_hqaf_attrs, hqaf_feature_maps=hqaf_feature_maps,
+            dkt_forget_caps=dkt_forget_caps,
         )
     elif dataset_mode == "all_in_one":
         # ALL-in-One mode: use KTQueDataset with 2D concept sequences
@@ -214,6 +217,7 @@ def build_dataloaders(dataset_name, data_config, fold, batch_size, model_name=No
             include_dkt_forget=include_dkt_forget, difficulty_maps=difficulty_maps,
             include_history=include_history,
             include_hqaf_attrs=include_hqaf_attrs, hqaf_feature_maps=hqaf_feature_maps,
+            dkt_forget_caps=dkt_forget_caps,
         )
         valid_ds = KTQueDataset(
             train_valid_path, cfg["input_type"], {fold},
@@ -222,6 +226,7 @@ def build_dataloaders(dataset_name, data_config, fold, batch_size, model_name=No
             include_dkt_forget=include_dkt_forget, difficulty_maps=difficulty_maps,
             include_history=include_history,
             include_hqaf_attrs=include_hqaf_attrs, hqaf_feature_maps=hqaf_feature_maps,
+            dkt_forget_caps=dkt_forget_caps,
         )
     else:
         # Default: use KTDataset (One-by-One mode) for backward compatibility
@@ -233,6 +238,7 @@ def build_dataloaders(dataset_name, data_config, fold, batch_size, model_name=No
             include_dkt_forget=include_dkt_forget, difficulty_maps=difficulty_maps,
             include_history=include_history,
             include_hqaf_attrs=include_hqaf_attrs, hqaf_feature_maps=hqaf_feature_maps,
+            dkt_forget_caps=dkt_forget_caps,
         )
         valid_ds = KTDataset(
             train_valid_path, cfg["input_type"], {fold},
@@ -240,6 +246,7 @@ def build_dataloaders(dataset_name, data_config, fold, batch_size, model_name=No
             include_dkt_forget=include_dkt_forget, difficulty_maps=difficulty_maps,
             include_history=include_history,
             include_hqaf_attrs=include_hqaf_attrs, hqaf_feature_maps=hqaf_feature_maps,
+            dkt_forget_caps=dkt_forget_caps,
         )
 
     train_ds = apply_train_label_flip(
@@ -285,6 +292,7 @@ def build_test_dataloaders(dataset_name, data_config, batch_size, model_name=Non
     include_history = kwargs.get("include_history", False)
     include_hqaf_attrs = kwargs.get("include_hqaf_attrs", False)
     hqaf_feature_maps = kwargs.get("hqaf_feature_maps")
+    dkt_forget_caps = kwargs.get("dkt_forget_caps")
     model_name_lower = (model_name or "").lower()
     if dataset_mode is None:
         if model_name_lower in ALL_IN_ONE_DATASET_MODELS:
@@ -307,6 +315,7 @@ def build_test_dataloaders(dataset_name, data_config, batch_size, model_name=Non
             include_dkt_forget=include_dkt_forget, difficulty_maps=difficulty_maps,
             include_history=include_history,
             include_hqaf_attrs=include_hqaf_attrs, hqaf_feature_maps=hqaf_feature_maps,
+            dkt_forget_caps=dkt_forget_caps,
         )
     else:
         test_key = "test_window_file" if window else "test_file"
@@ -317,6 +326,7 @@ def build_test_dataloaders(dataset_name, data_config, batch_size, model_name=Non
             include_dkt_forget=include_dkt_forget, difficulty_maps=difficulty_maps,
             include_history=include_history,
             include_hqaf_attrs=include_hqaf_attrs, hqaf_feature_maps=hqaf_feature_maps,
+            dkt_forget_caps=dkt_forget_caps,
         )
 
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)

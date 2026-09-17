@@ -5,21 +5,45 @@ import pandas as pd
 import torch
 
 
-def get_gkt_graph(num_c, dpath, trainfile, testfile=None, graph_type="dense", tofile="graph.npz"):
-    """Build and cache the graph used by GKT, matching pykt's init flow."""
+def get_gkt_graph(num_c, dpath, trainfile, testfile=None, graph_type="dense",
+                  tofile="graph.npz", folds=None):
+    """Build and cache the graph used by GKT.
+
+    `folds=None` matches pyKT's init flow, which counts transitions from the
+    training and test files together. Passing the current fold's training folds
+    restricts it to those rows and drops the test file, which is what AGENTS.md
+    requires of a derived feature: the graph is part of the model's structure,
+    and building it from the test split makes the run transductive.
+
+    Only the `concepts` column is read either way, so neither is label leakage.
+    """
     if graph_type == "dense":
         graph = build_dense_graph(num_c)
     elif graph_type == "transition":
         frames = []
-        for filename in (trainfile, testfile):
+        fold_set = {int(f) for f in folds} if folds is not None else None
+        sources = (trainfile,) if fold_set is not None else (trainfile, testfile)
+        for filename in sources:
             if not filename:
                 continue
             path = os.path.join(dpath, filename)
-            if os.path.exists(path):
-                frames.append(pd.read_csv(path))
+            if not os.path.exists(path):
+                continue
+            frame = pd.read_csv(path)
+            if fold_set is not None:
+                if "fold" not in frame.columns:
+                    raise ValueError(
+                        f"GKT graph source {path} has no 'fold' column, so it "
+                        "cannot be restricted to the training folds. Set "
+                        "`pykt_transductive: true` to build from every split."
+                    )
+                frame = frame[frame["fold"].astype(int).isin(fold_set)]
+            if not frame.empty:
+                frames.append(frame)
         if not frames:
             raise FileNotFoundError(
-                f"Cannot build GKT transition graph: no source CSV found in {dpath}."
+                f"Cannot build GKT transition graph: no source rows found in {dpath}"
+                + (f" for folds {sorted(fold_set)}." if fold_set is not None else ".")
             )
         graph = build_transition_graph(pd.concat(frames, ignore_index=True), num_c)
     else:

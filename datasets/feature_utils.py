@@ -116,10 +116,31 @@ def compute_dkt_forget_gaps(row, input_type):
     return repeated_gap, sequence_gap, past_counts
 
 
-def compute_dkt_forget_stats(dpath, filenames, input_type):
+def compute_dkt_forget_stats(dpath, filenames, input_type, folds=None):
+    """Size the gap embedding tables DKT-Forget indexes into.
+
+    A gap is "how long since this learner last met this concept", log2-bucketed,
+    so the returned counts are table heights rather than statistics about the
+    data. They are what made this function read the test file: not to see any
+    label -- it reads `timestamps` only -- but to know how many rows to allocate.
+
+    `folds` restricts the source to the current fold's training rows, which is
+    what AGENTS.md requires of any derived feature. That leaves a table that can
+    be too short, because valid or test may hold a longer gap than training ever
+    saw, so one extra row is reserved as an out-of-vocabulary bucket meaning
+    "longer than anything in training". `clamp_dkt_forget_gaps` maps oversized
+    values onto it.
+
+    Passing `folds=None` restores the older behaviour of taking a maximum over
+    every split, which is what pyKT does.
+    """
     max_rgap, max_sgap, max_pcount = 0, 0, 0
     checked_paths = []
     found_timestamp_file = False
+    fold_set = {int(fold) for fold in folds} if folds is not None else None
+    if fold_set is not None and not fold_set:
+        raise ValueError("DKT-forget gap folds must not be empty.")
+
     for filename in filenames:
         if not filename:
             continue
@@ -130,6 +151,15 @@ def compute_dkt_forget_stats(dpath, filenames, input_type):
         df = pd.read_csv(path, dtype=str, keep_default_na=False)
         if "timestamps" not in df.columns:
             continue
+        if fold_set is not None:
+            if "fold" not in df.columns:
+                # The test file carries no fold column; under a train-folds
+                # scope it contributes nothing and is skipped rather than
+                # silently contributing everything.
+                continue
+            df = df[df["fold"].astype(int).isin(fold_set)]
+            if df.empty:
+                continue
         found_timestamp_file = True
         for _, row in df.iterrows():
             rgap, sgap, pcount = compute_dkt_forget_gaps(row, input_type)
@@ -140,15 +170,34 @@ def compute_dkt_forget_stats(dpath, filenames, input_type):
             if pcount:
                 max_pcount = max(max_pcount, max(pcount))
     if not found_timestamp_file:
+        scope = "training folds" if fold_set is not None else "any split"
         raise ValueError(
             "DKT-forget requires at least one existing sequence file with a "
-            f"'timestamps' column for gap statistics. Checked: {checked_paths}"
+            f"'timestamps' column for gap statistics, within {scope}. "
+            f"Checked: {checked_paths}"
         )
+
+    # +1 turns a maximum into a count; the second +1 under a fold scope is the
+    # out-of-vocabulary row.
+    oov = 1 if fold_set is not None else 0
     return {
-        "num_rgap": max_rgap + 1,
-        "num_sgap": max_sgap + 1,
-        "num_pcount": max_pcount + 1,
+        "num_rgap": max_rgap + 1 + oov,
+        "num_sgap": max_sgap + 1 + oov,
+        "num_pcount": max_pcount + 1 + oov,
     }
+
+
+def clamp_dkt_forget_gaps(values, cap):
+    """Fold anything at or past `cap` onto the last row of the table.
+
+    Under a train-folds scope that last row is the reserved out-of-vocabulary
+    bucket, so an unseen long gap becomes "longer than training ever saw"
+    instead of an index error. With no cap the values pass through.
+    """
+    if not cap:
+        return values
+    limit = int(cap) - 1
+    return [min(int(v), limit) for v in values]
 
 
 def compute_history_correctness(concepts, responses):

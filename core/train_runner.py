@@ -261,6 +261,21 @@ def train_one_fold(
     feature_fit_scope = "none"
     graph_scope = "none"
 
+    # AGENTS.md: "数据派生特征只能用当前 fold 的训练部分拟合，再应用到 valid/test."
+    # Three models did not follow it -- dkt_forget sized its gap tables from
+    # every split, gkt counted its transition graph from train and test, dgekt
+    # pulled in test question metadata. None reads a response, so none is label
+    # leakage, but all three make the run transductive: the model's structure is
+    # built already knowing what the test set holds, which is not something
+    # deployment gives you.
+    #
+    # The default now follows the rule. `pykt_transductive: true` restores the
+    # old behaviour for tables that have to line up with pyKT's published
+    # numbers, exactly as `keep_scaffolding` does for the ASSISTments filter.
+    # The two are recorded separately in the protocol block and cannot share a
+    # table.
+    pykt_transductive = bool(train_cfg_local.get("pykt_transductive", False))
+
     lpkt_time_idx_maps = None
     if model_name in {"lpkt", "hdkt"}:
         train_time_folds = (
@@ -296,6 +311,7 @@ def train_one_fold(
         )
     dimkt_difficulty_maps = None
     hqaf_feature_maps = None
+    dkt_forget_caps = None
     if model_name == "dkt_forget":
         train_valid_key = "train_valid_file_quelevel" if train_cfg_local.get("dataset_mode") == "all_in_one" else "train_valid_file"
         test_key = "test_file_quelevel" if train_cfg_local.get("dataset_mode") == "all_in_one" else "test_file"
@@ -303,14 +319,20 @@ def train_one_fold(
             _resolve_existing_sequence_filename(dataset_cfg_local, train_valid_key, "train_valid_file"),
             _resolve_existing_sequence_filename(dataset_cfg_local, test_key, "test_file"),
         ]
+        gap_folds = None if pykt_transductive else sorted(
+            set(dataset_cfg_local.get("folds", [])) - {int(fold_id)}
+        )
         gap_stats = compute_dkt_forget_stats(
             dataset_cfg_local["dpath"],
             gap_files,
             dataset_cfg_local["input_type"],
+            folds=gap_folds,
         )
-        # gap_files above is [train_valid, test] with no fold filter, so the
-        # embedding table sizes are a maximum over every split.
-        feature_fit_scope = "train_valid_test"
+        feature_fit_scope = "train_valid_test" if pykt_transductive else "train_folds"
+        # The tables are sized from the training folds, so a longer gap in valid
+        # or test has to land on the reserved out-of-vocabulary row instead of
+        # indexing past the end.
+        dkt_forget_caps = None if pykt_transductive else dict(gap_stats)
         model_cfg_local.update(gap_stats)
         dataset_cfg_local.update(gap_stats)
         model_cfg_local["use_timestamps"] = True
@@ -406,7 +428,10 @@ def train_one_fold(
             dataset_cfg_local, test_graph_file_key, "test_file"
         )
         association_files = []
-        if model_cfg_local.get("include_test_question_metadata", True) and test_graph_file and os.path.exists(
+        include_test_metadata = model_cfg_local.get(
+            "include_test_question_metadata", pykt_transductive
+        )
+        if include_test_metadata and test_graph_file and os.path.exists(
             os.path.join(dataset_cfg_local["dpath"], test_graph_file)
         ):
             association_files.append(test_graph_file)
@@ -480,6 +505,7 @@ def train_one_fold(
     dataset_mode = train_cfg_local.get("dataset_mode")
     dataset_feature_kwargs = {
         "include_dkt_forget": model_name == "dkt_forget",
+        "dkt_forget_caps": dkt_forget_caps,
         "difficulty_maps": dimkt_difficulty_maps,
         "include_history": model_name == "atdkt" and "his" in resolved_emb_type,
         "include_hqaf_attrs": model_name == "hqaf",

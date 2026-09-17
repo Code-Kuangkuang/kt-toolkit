@@ -129,29 +129,50 @@ class ProtocolKeyTest(unittest.TestCase):
 class GktSpecScopeTest(unittest.TestCase):
     """GKT reports its own scope, the same way it reports its graph."""
 
-    def _prepare(self, graph_type):
+    def _prepare(self, graph_type, transductive=False):
         from tests.test_model_contracts import _MinimalContext
 
         ctx = _MinimalContext("gkt", "all_in_one")
         ctx.dataset_cfg = dict(DATA_CONFIG["assist2009"])
         ctx.model_cfg = {"graph_type": graph_type}
+        ctx.train_cfg = {"pykt_transductive": transductive}
         return spec_for(MODEL_REGISTRY.get("gkt")).prepare(ctx)
 
-    def test_transition_graph_is_transductive(self):
-        """Counted from the train and test sequence files, with no fold filter."""
+    def test_transition_graph_defaults_to_the_training_folds(self):
+        """AGENTS.md: a derived feature is fitted on the training folds only.
+
+        Not cosmetic on this dataset: counting assist2009's transitions from
+        every split gives 3953 non-zero edges against 3511 from the training
+        folds, so 11% of the graph exists only because it saw valid and test.
+        """
         extras = self._prepare("transition").run_config_extras
+        self.assertEqual(extras["graph_scope"], "train_folds")
+
+    def test_pykt_transductive_restores_the_old_scope(self):
+        extras = self._prepare("transition", transductive=True).run_config_extras
         self.assertEqual(extras["graph_scope"], "train_valid_test")
 
     def test_dense_graph_reads_nothing(self):
-        """All ones, so no split contributes to it."""
-        extras = self._prepare("dense").run_config_extras
-        self.assertEqual(extras["graph_scope"], "none")
+        """All ones, so no split contributes to it, under either setting."""
+        for transductive in (False, True):
+            with self.subTest(transductive=transductive):
+                extras = self._prepare("dense", transductive).run_config_extras
+                self.assertEqual(extras["graph_scope"], "none")
+
+    def test_the_two_scopes_do_not_share_a_graph_cache(self):
+        """A cached graph from one scope must never be served to the other."""
+        import re
+
+        source = (ROOT / "models" / "gkt.py").read_text(encoding="utf-8")
+        self.assertRegex(source, r'scope = "tvt" if transductive else f"tf\{ctx\.fold_id\}"')
+        self.assertIn("{scope}", source)
 
     def test_reported_scopes_are_valid_names(self):
         for graph_type in ("transition", "dense"):
-            with self.subTest(graph_type=graph_type):
-                extras = self._prepare(graph_type).run_config_extras
-                self.assertIn(extras["graph_scope"], FIT_SCOPES)
+            for transductive in (False, True):
+                with self.subTest(graph_type=graph_type, transductive=transductive):
+                    extras = self._prepare(graph_type, transductive).run_config_extras
+                    self.assertIn(extras["graph_scope"], FIT_SCOPES)
 
 
 if __name__ == "__main__":

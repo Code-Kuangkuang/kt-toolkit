@@ -6,7 +6,12 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-from .feature_utils import compute_dkt_forget_gaps, compute_history_correctness, _to_time_bin
+from .feature_utils import (
+    clamp_dkt_forget_gaps,
+    compute_dkt_forget_gaps,
+    compute_history_correctness,
+    _to_time_bin,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -48,6 +53,7 @@ def _feature_cache_tag(
     include_history=False,
     include_hqaf_attrs=False,
     hqaf_feature_maps=None,
+    dkt_forget_caps=None,
 ):
     parts = [
         "df1" if include_dkt_forget else "df0",
@@ -68,6 +74,13 @@ def _feature_cache_tag(
         qtime_body = "|".join(f"{k}:{v}" for k, v in sorted(qtime.items()))
         edge_body = "|".join(str(v) for v in hqaf_feature_maps.get("time_bin_edges", []))
         parts.append(hashlib.sha1((qtime_body + "|" + edge_body).encode("utf-8")).hexdigest()[:10])
+    # The gap tables clamp oversized values onto their last row, so the same
+    # source file bucketed under different heights yields different tensors.
+    if dkt_forget_caps:
+        parts.append("gapcap_" + "_".join(
+            str(dkt_forget_caps.get(k, 0))
+            for k in ("num_rgap", "num_sgap", "num_pcount")
+        ))
     # Part of the cache key: the supervision mask changes with this flag, so a
     # pickle written under the old behaviour must not be reused under the new.
     parts.append("screp1" if SCORE_REPEATED_KC else "screp0")
@@ -259,6 +272,7 @@ class KTDataset(Dataset):
         include_history=False,
         include_hqaf_attrs=False,
         hqaf_feature_maps=None,
+        dkt_forget_caps=None,
     ):
         super().__init__()
         self.dataset_mode = "one_by_one"
@@ -267,6 +281,7 @@ class KTDataset(Dataset):
         self.use_timestamps = use_timestamps
         self.time_idx_maps = time_idx_maps
         self.include_dkt_forget = include_dkt_forget
+        self.dkt_forget_caps = dkt_forget_caps or {}
         self.difficulty_maps = difficulty_maps
         self.include_history = include_history
         self.include_hqaf_attrs = include_hqaf_attrs
@@ -284,6 +299,7 @@ class KTDataset(Dataset):
                 include_history,
                 include_hqaf_attrs,
                 self.hqaf_feature_maps,
+                self.dkt_forget_caps,
             )
         )
         processed = _dataset_cache_path(file_path, f"{folds_str}_{cache_tag}_ut1_kt")
@@ -369,6 +385,10 @@ class KTDataset(Dataset):
                 if "timestamps" not in row.index or not row["timestamps"]:
                     raise ValueError(f"DKT-forget requires timestamps in {sequence_path}.")
                 rgap, sgap, pcount = compute_dkt_forget_gaps(row, self.input_type)
+                caps = self.dkt_forget_caps
+                rgap = clamp_dkt_forget_gaps(rgap, caps.get("num_rgap"))
+                sgap = clamp_dkt_forget_gaps(sgap, caps.get("num_sgap"))
+                pcount = clamp_dkt_forget_gaps(pcount, caps.get("num_pcount"))
                 dori["rgaps"].append(_fit_sequence(rgap, len(responses), 0))
                 dori["sgaps"].append(_fit_sequence(sgap, len(responses), 0))
                 dori["pcounts"].append(_fit_sequence(pcount, len(responses), 0))
@@ -490,6 +510,7 @@ class KTQueDataset(Dataset):
         include_history=False,
         include_hqaf_attrs=False,
         hqaf_feature_maps=None,
+        dkt_forget_caps=None,
     ):
         super().__init__()
         self.dataset_mode = "all_in_one"
@@ -501,6 +522,7 @@ class KTQueDataset(Dataset):
         self.use_timestamps = use_timestamps
         self.time_idx_maps = time_idx_maps
         self.include_dkt_forget = include_dkt_forget
+        self.dkt_forget_caps = dkt_forget_caps or {}
         self.difficulty_maps = difficulty_maps
         self.include_history = include_history
         self.include_hqaf_attrs = include_hqaf_attrs
@@ -526,6 +548,7 @@ class KTQueDataset(Dataset):
                 include_history,
                 include_hqaf_attrs,
                 self.hqaf_feature_maps,
+                self.dkt_forget_caps,
             )
         )
         processed = _dataset_cache_path(
@@ -645,6 +668,10 @@ class KTQueDataset(Dataset):
             scored_kept += sum(1 for m in smask if m != -1)
             if self.include_dkt_forget:
                 rgap, sgap, pcount = compute_dkt_forget_gaps(row, self.input_type)
+                caps = self.dkt_forget_caps
+                rgap = clamp_dkt_forget_gaps(rgap, caps.get("num_rgap"))
+                sgap = clamp_dkt_forget_gaps(sgap, caps.get("num_sgap"))
+                pcount = clamp_dkt_forget_gaps(pcount, caps.get("num_pcount"))
                 dori["rgaps"].append(_fit_sequence(rgap, len(responses), 0))
                 dori["sgaps"].append(_fit_sequence(sgap, len(responses), 0))
                 dori["pcounts"].append(_fit_sequence(pcount, len(responses), 0))

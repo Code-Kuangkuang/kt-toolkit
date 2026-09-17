@@ -113,32 +113,44 @@ Each run therefore records a `protocol` block in `run_config.json`:
 | `feature_fit_scope` | which splits the run's derived features were fitted from |
 | `graph_scope` | the same, for a concept graph |
 
-The last two are `none`, `train_folds` or `train_valid_test`, and they are
-descriptive rather than a claim that the value is correct. None of the features
-in question reads responses, so none of it is label leakage; what the scope
-decides is whether a run is **transductive** -- whether the model's structure was
-built already knowing what the test set contains, which is not a thing you have
-in deployment.
+The last two are `none`, `train_folds` or `train_valid_test`. None of the
+features in question reads responses, so none of it is label leakage; what the
+scope decides is whether a run is **transductive** -- whether the model's
+structure was built already knowing what the test set contains, which is not a
+thing you have in deployment.
 
-The scopes are genuinely mixed:
+AGENTS.md states the rule: a derived feature is fitted on the current fold's
+training rows only. Three models did not follow it, and now do by default:
 
-| Model | Scope | Why |
+| Model | Default | With `pykt_transductive: true` |
 |---|---|---|
-| `dimkt`, `hqaf`, `lpkt`/`hdkt` | `train_folds` | already pass `folds=train_folds` |
-| `dkt_forget` | `train_valid_test` | gap dimensions are a max over every split |
-| `gkt` (transition) | `train_valid_test` | transition counts include the test file |
-| `dgekt` | `train_valid_test` | `include_test_question_metadata` on by default |
-| everything else | `none` | derives nothing from the data |
+| `dkt_forget` | `train_folds`, gap tables sized from training and given an OOV row | `train_valid_test`, tables sized over every split |
+| `gkt` (transition) | `train_folds` | `train_valid_test`, counts include the test file |
+| `dgekt` | `train_folds` | `train_valid_test`, test question metadata included |
+| `dimkt`, `hqaf`, `lpkt`/`hdkt` | `train_folds` | unchanged; these already passed `folds=train_folds` |
+| everything else | `none` | unchanged; derives nothing from the data |
 
-pyKT does the same in all three transductive cases -- checked against its
-`init_model.py` and `init_dataset.py` -- so changing the behaviour means losing
-comparability with every published baseline, the same trade as the ASSISTments
-scaffolding filter. Recording it costs nothing and makes the question answerable
-from an artifact.
+This is not cosmetic. On assist2009, counting GKT's transitions from every split
+gives 3953 non-zero edges against 3511 from the training folds: 11% of the graph
+existed only because it had seen valid and test.
 
-The value is set at the site that does the fitting, not from a lookup table,
-because a table drifts from the code. A model that has moved to an `Inputs` spec
-reports its own through `run_config_extras`, as `gkt` does.
+pyKT fits from every split in all three cases, so `pykt_transductive: true` is
+there for tables that have to line up with its published numbers -- the same
+shape as `keep_scaffolding` for the ASSISTments filter. It reproduces the old
+behaviour exactly: the compatibility graph is element-for-element identical to
+the previously cached one. Runs under the two settings record different scopes
+and so cannot share a table.
+
+Sizing DKT-Forget's gap tables from training alone leaves them able to be too
+short, since valid or test can hold a longer gap than training saw. One row is
+reserved as an out-of-vocabulary bucket and `clamp_dkt_forget_gaps` folds
+oversized values onto it; the table heights are part of the dataset cache key,
+because the same file bucketed under different heights produces different
+tensors.
+
+The scope value is set at the site that does the fitting, not from a lookup
+table, because a table drifts from the code. A model that has moved to an
+`Inputs` spec reports its own through `run_config_extras`, as `gkt` does.
 
 `datasets/init_dataset.py::protocol_stamp` builds it, and
 `scripts/run_baseline_table.py::protocol_key` groups on **all eight fields**. A
