@@ -128,6 +128,12 @@ def train_one_fold(
     model_name = MODEL_NAME_ALIASES.get(model_name.lower(), model_name.lower())
     kt_cfg = copy.deepcopy(kt_cfg_raw)
     train_cfg_local = kt_cfg["train_config"]
+    if model_name not in kt_cfg:
+        raise KeyError(
+            f"No hyperparameter block for model {model_name!r} in the kt config. "
+            f"Add a top-level {model_name!r} object to configs/kt_config.json; "
+            "see docs/architecture.md, 'Adding A Model'."
+        )
     model_cfg_local = kt_cfg[model_name]
 
     resolved_emb_type = emb_type or model_cfg_local.get("emb_type", "qid")
@@ -622,6 +628,11 @@ def train_one_fold(
         last_test_metrics = trainer.evaluate_test()
         if last_test_metrics:
             print(f"[Last Epoch]        Test AUC={last_test_metrics.get('test_auc', -1):.4f}, ACC={last_test_metrics.get('test_acc', -1):.4f}")
+        # Leave the model holding the weights this run actually selected. The
+        # last-epoch load above is only for the secondary metric, and nothing
+        # should inherit it by accident.
+        if best_path and os.path.exists(best_path):
+            trainer.model.load_state_dict(torch.load(best_path, weights_only=True))
 
     best_metrics = getattr(trainer, "best_metrics", None)
     if best_metrics is not None:
@@ -644,5 +655,5 @@ def train_one_fold(
         "emb_type": resolved_emb_type,
         "train_label_flip": train_label_flip_info,
         "best_metrics": best_metrics,
-        "best_path": getattr(trainer, "best_path", None),
+        "best_path": best_path,
     }
