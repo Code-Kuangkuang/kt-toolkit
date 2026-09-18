@@ -13,9 +13,35 @@ class DKTPEBG(Module):
     class Inputs(InputSpec):
         """Resolves which pretrained PEBG embedding, if any, to warm-start from.
 
-        The strategy function already returns its decision instead of mutating,
-        so this is the thinnest of the migrations.
+        The embedding is a derived feature like any other: scripts/pretrain_pebg.py
+        fits it from the sequence data, and with `--fold N` it excludes fold N and
+        writes to `pebg/fold{N}`. Which one a run picked up therefore belongs in
+        the protocol block, and the scope is read back from the directory the
+        strategy actually selected rather than from what was requested.
         """
+
+        @classmethod
+        def _booster_scope(cls, booster, ctx):
+            """Where the embedding this run loaded was fitted from.
+
+            `train_folds` only when the selected directory is this fold's, since
+            that is the one pretrain_pebg builds with the fold held out. An
+            explicit `emb_path` bypasses the fold lookup entirely, and a
+            fold-less `pebg/` directory was pretrained on everything; neither can
+            be shown to exclude the test split, so both are recorded as
+            transductive rather than assumed clean.
+            """
+            import os
+
+            if not booster.get("enabled"):
+                return "none"
+            selected = os.path.normpath(booster.get("pebg_dir", "") or "")
+            expected = os.path.normpath(
+                os.path.join(
+                    booster.get("pebg_dir_native", "") or "", f"fold{ctx.fold_id}"
+                )
+            )
+            return "train_folds" if selected and selected == expected else "train_valid_test"
 
         @classmethod
         def prepare(cls, ctx):
@@ -28,15 +54,26 @@ class DKTPEBG(Module):
                 root_dir=ctx.root_dir,
                 fold_id=ctx.fold_id,
             )
+            scope = cls._booster_scope(booster, ctx)
+            booster["fit_scope"] = scope
             print(
                 "DKT-PEBG booster strategy resolved: "
                 f"strategy={booster.get('strategy')} "
                 f"enabled={booster.get('enabled')} "
+                f"fit_scope={scope} "
                 f"emb_path={booster.get('emb_path', '')}"
             )
+            if scope == "train_valid_test":
+                print(
+                    "  Warning: this embedding was not shown to exclude the "
+                    "current fold. Pretrain per fold with "
+                    "`python scripts/pretrain_pebg.py --preprocess_mode sequence "
+                    f"--fold {ctx.fold_id}`, or accept a transductive run."
+                )
             return ModelInputs(
                 model_cfg_updates=model_cfg,
                 run_config_extras={"booster_info": booster},
+                feature_fit_scope=scope,
             )
 
     def __init__(

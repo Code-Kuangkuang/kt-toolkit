@@ -177,3 +177,64 @@ class GktSpecScopeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DktPebgBoosterScopeTest(unittest.TestCase):
+    """The PEBG booster embedding is a derived feature and must declare a scope.
+
+    scripts/pretrain_pebg.py fits it from the sequence data; with `--fold N` it
+    excludes fold N and writes to `pebg/fold{N}`. Which of those a run picked up
+    changes whether the run is transductive, so the spec reads the scope back
+    from the directory the strategy actually selected rather than from what was
+    asked for.
+    """
+
+    class _Ctx:
+        fold_id = 0
+
+    def _scope(self, **booster):
+        spec = spec_for(MODEL_REGISTRY.get("dkt_pebg"))
+        return spec._booster_scope(booster, self._Ctx())
+
+    def test_a_disabled_booster_fits_nothing(self):
+        self.assertEqual(self._scope(enabled=False), "none")
+
+    def test_this_folds_directory_is_fold_clean(self):
+        self.assertEqual(
+            self._scope(enabled=True, pebg_dir="data/a/pebg/fold0",
+                        pebg_dir_native="data/a/pebg"),
+            "train_folds",
+        )
+
+    def test_a_fold_less_directory_is_transductive(self):
+        """`pebg/` with no fold suffix was pretrained on every split."""
+        self.assertEqual(
+            self._scope(enabled=True, pebg_dir="data/a/pebg",
+                        pebg_dir_native="data/a/pebg"),
+            "train_valid_test",
+        )
+
+    def test_an_explicit_emb_path_is_treated_as_transductive(self):
+        """Setting emb_path skips the fold lookup, so nothing shows it excluded
+        this fold. Conservative beats optimistic for a leakage question."""
+        self.assertEqual(
+            self._scope(enabled=True, pebg_dir="some/custom/dir",
+                        pebg_dir_native="data/a/pebg"),
+            "train_valid_test",
+        )
+
+    def test_another_folds_directory_does_not_count_as_clean(self):
+        self.assertEqual(
+            self._scope(enabled=True, pebg_dir="data/a/pebg/fold3",
+                        pebg_dir_native="data/a/pebg"),
+            "train_valid_test",
+        )
+
+    def test_every_reported_scope_is_a_valid_name(self):
+        for booster in (
+            {"enabled": False},
+            {"enabled": True, "pebg_dir": "data/a/pebg/fold0", "pebg_dir_native": "data/a/pebg"},
+            {"enabled": True, "pebg_dir": "", "pebg_dir_native": ""},
+        ):
+            with self.subTest(booster=booster):
+                self.assertIn(self._scope(**booster), FIT_SCOPES)
