@@ -14,7 +14,12 @@ for datasets, models, trainers, and the WebUI.
 - Core framework: registry, factory, hooks, base trainer, and training runner
   in `core/`.
 - Data layer: cleaning adapters, preprocessing utilities, and PyTorch datasets.
-- Model layer: KT model implementations in `models/`.
+- Model layer: KT model implementations in `models/`. One registered model per
+  file; shared neural building blocks live in `modules/`.
+- Composition layer: `plugins/` holds things that modify a backbone without
+  being a model (HD-KT's denoiser gate), and `strategies/` holds things that
+  decide which artifact a model loads (DKT-PEBG's booster). Both produce or
+  configure registered models without appearing in `models/`.
 - Artifact layer: checkpoints, run configs, metrics JSONL, CV summaries, and
   logs.
 
@@ -358,7 +363,7 @@ the original changes. All three copies had already diverged, silently.
 
 ### The seam
 
-Backbones that a plugin targets name their stages (`models/backbone.py`):
+Backbones that a plugin targets name their stages (`core/backbone.py`):
 
 ```text
 batch  = model.make_batch(**whatever its forward takes)

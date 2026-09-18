@@ -10,7 +10,7 @@ import numpy as np
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 from core.registry import MODEL_REGISTRY
-from .backbone import Embeddings, SeqBatch, infer_valid_mask
+from core.backbone import Embeddings, SeqBatch, infer_valid_mask
 from .multi_concept import pool_concept_embeddings, pool_interaction_embeddings
 
 class Dim(IntEnum):
@@ -109,7 +109,7 @@ class AKT(nn.Module):
             qa_embed_data = self.qa_embed(target)+q_embed_data
         return q_embed_data, qa_embed_data
 
-    # -- Stages. See models/backbone.py for why these exist. --
+    # -- Stages. See core/backbone.py for why these exist. --
 
     def make_batch(self, q_data, target, pid_data=None, qtest=False, valid_mask=None):
         if valid_mask is None:

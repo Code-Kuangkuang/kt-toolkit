@@ -5,7 +5,7 @@ import math
 import numpy as np
 from core.model_inputs import InputSpec
 from core.registry import MODEL_REGISTRY
-from .backbone import Embeddings, SeqBatch, infer_valid_mask
+from core.backbone import Embeddings, SeqBatch, infer_valid_mask
 from .multi_concept import pool_concept_embeddings, pool_interaction_embeddings
 
 
@@ -120,7 +120,7 @@ class SimpleKT(nn.Module):
             qa_embed_data = self.qa_embed(target) + q_embed_data
         return q_embed_data, qa_embed_data
 
-    # -- Stages. See models/backbone.py for why these exist. --
+    # -- Stages. See core/backbone.py for why these exist. --
 
     def make_batch(
         self,

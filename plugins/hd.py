@@ -6,15 +6,12 @@ a copy of the backbone's own forward pass, kept only so that a single
 multiplication could be inserted in the middle of it.
 
 Adding a fourth backbone is now one `register_plugged` line, provided that
-backbone has the four stages described in models/backbone.py.
+backbone has the four stages described in core/backbone.py.
 """
 
 from core.model_inputs import InputSpec
-from models.akt import AKT  # noqa: F401  (registers "akt" before we look it up)
-from models.dkt import DKT  # noqa: F401
-from models.hdkt_core import HybridInteractionDenoiser
-from models.plugin import BackbonePlugin, register_plugged
-from models.simplekt import SimpleKT  # noqa: F401
+from core.plugin import BackbonePlugin, register_plugged
+from modules.hd_denoiser import HybridInteractionDenoiser
 
 
 class HDInputs(InputSpec):

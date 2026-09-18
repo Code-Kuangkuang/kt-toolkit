@@ -16,9 +16,9 @@ import models  # noqa: F401
 from core.factory import build_model
 from core.registry import TRAINER_REGISTRY
 from models.akt import AKT
-from models.backbone import infer_valid_mask
+from core.backbone import infer_valid_mask
 from models.dkt import DKT
-from models.plugin import PluggedKT
+from core.plugin import PluggedKT
 from models.simplekt import SimpleKT
 
 NUM_C, NUM_Q = 6, 12

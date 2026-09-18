@@ -19,10 +19,10 @@ backbones.
 
 ### How the three backbone variants are built
 
-They are compositions, not separate models.  `models/hd_plugin.py` holds one
+They are compositions, not separate models.  `plugins/hd.py` holds one
 `HDPlugin` and three registration lines; there is no `hd_akt.py`.  The plugin
 replaces `Embeddings.history` between the backbone's `embed` and `encode`
-stages, which `models/backbone.py` describes, and `core/trainers/plugin_trainer.py`
+stages, which `core/backbone.py` describes, and `core/trainers/plugin_trainer.py`
 adds the reconstruction term to whatever loss the backbone's own trainer
 computed.
 

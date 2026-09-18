@@ -31,9 +31,12 @@ from .rekt import ReKT
 from .lefokt_akt import LEFOKT_AKT
 from .hqaf import HQAFKT
 
-# Registers hd_dkt / hd_akt / hd_simplekt as backbone+plugin compositions.
-# Must come last: register_plugged looks its backbone up in the registry.
-from . import hd_plugin  # noqa: F401
+# Backbone+plugin compositions (hd_dkt, hd_akt, hd_simplekt). Must come
+# last: register_plugged looks its backbone up in MODEL_REGISTRY, so every
+# backbone above has to be registered first. Imported from here rather
+# than from each entry point so that `import models` stays the one thing
+# a caller needs to populate the model registry.
+import plugins  # noqa: F401
 
 # Keep the public export aligned with the import-time model registration.
 

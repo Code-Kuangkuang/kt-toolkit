@@ -3,7 +3,7 @@ import torch
 from torch.nn import Module, Embedding, LSTM, Linear, Dropout
 
 from core.registry import MODEL_REGISTRY
-from .backbone import Embeddings, SeqBatch, infer_valid_mask
+from core.backbone import Embeddings, SeqBatch, infer_valid_mask
 from .multi_concept import pool_interaction_embeddings
 
 
@@ -22,7 +22,7 @@ class DKT(Module):
         self.dropout_layer = Dropout(dropout)
         self.out_layer = Linear(self.hidden_size, self.num_c)
 
-    # -- Stages. See models/backbone.py for why these exist. --
+    # -- Stages. See core/backbone.py for why these exist. --
 
     def make_batch(self, q, r, item_data=None, valid_mask=None):
         """`item_data` is the question id when the caller has one to offer.
