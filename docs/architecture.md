@@ -343,6 +343,34 @@ element-for-element identical, maximum difference 0.000e+00.
 | `gkt` | verified separately when it moved |
 | `dkt_forget`, `lpkt`, `hdkt`, `dkt_pebg`, `hawkes` | not run end to end -- `dkt_forget` and `lpkt`/`hdkt` need a `timestamps` column that assist2009's quelevel files do not have, `dkt_pebg` needs a booster embedding, `hawkes` needs `one_by_one` data. Covered by the contract suite and by construction |
 
+## Dataset Inventory
+
+`configs/data_config.json` declares seventeen datasets. What is actually on disk
+was audited on 2026-09-18 and is pinned by `tests/test_dataset_inventory.py`, so
+a dataset that gains or loses a file breaks a test rather than a training run.
+
+| State | Datasets |
+|---|---|
+| Complete and trainable | `algebra2005`, `assist2009`, `assist2012`, `assist2017`, `bridge2algebra2006`, `junyi2015`, `junyi_sub5k`, `nips_task34`, `slepemapy` |
+| Partial | `aaai2023` -- two of twelve declared files exist |
+| Alias | `peiyou` -> `aaai2023`; `data/peiyou/` is empty |
+| Declared, no data | `assist2015`, `ednet`, `ednet5w`, `poj`, `pretrain`, `statics2011` |
+
+For the nine complete ones, everything the config promises holds: `num_c` and
+`num_q` match `keyid2idx.json` exactly, all five folds are present and balanced,
+`max_concepts` equals the widest question rather than merely bounding it, and no
+concept or question id in either split falls outside its declared range.
+
+`aaai2023` is a hidden-label competition set: `pykt_test.csv` marks its targets
+-1 and the runner disables test evaluation for it, so only the concept-level
+training file matters. The ten unbuilt declarations are kept because they
+describe what a regeneration would produce.
+
+`junyi_sub5k` names no windowed test file, which is how it says it has no
+windowed split. The runner treats that as a dataset property and records
+`eval_window: false` rather than failing; a dataset that *declares* a windowed
+file and lacks it is incomplete and does fail.
+
 ## Model Contract Tests
 
 `tests/test_model_contracts.py` walks the registry rather than naming models, so
