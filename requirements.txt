@@ -11,7 +11,7 @@
 # Versions are the ones this repository is tested against.
 #
 # This file used to be UTF-16 encoded, which pip cannot read at all, and it
-# listed matplotlib and seaborn, which nothing imports since research/removed_model was
+# listed matplotlib and seaborn, which nothing imports since that research directory was
 # removed, while omitting torch, numpy, scipy, rich, PyYAML and einops.
 
 numpy==2.3.5

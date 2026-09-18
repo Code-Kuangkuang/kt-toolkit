@@ -152,7 +152,7 @@ class ConfigKeysAreConsumedTest(unittest.TestCase):
 
 class NonModelConfigKeysTest(unittest.TestCase):
     def test_the_strip_list_has_no_dead_entries(self):
-        """It collected nine entries from deleted a removed model models before anyone
+        """It collected nine entries from models that were later removed before anyone
         looked. An entry no config block uses is either dead or a typo."""
         used = set()
         for block in KT_CONFIG.values():

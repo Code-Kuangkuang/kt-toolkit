@@ -226,7 +226,7 @@ pykt 是把「1 个干净预测 + N−1 个被污染预测」取平均，我们�
 
 | 基线 | 变体 | 谁占便宜 |
 |---|---|---|
-| `removed_model`（全部） | 多数标准基线（仅第一个） | **利好 a removed model** |
+| 自研模型（全部） | 多数标准基线（仅第一个） | **利好自研模型** |
 | `lpkt`（仅第一个） | `hdkt`（全部） | **利好 HDKT** |
 
 #### 截断的实测代价
@@ -245,7 +245,7 @@ algebra2005 占比 30.4%，代价预计翻倍（0.012–0.015 量级）。
 
 该量级与论文中常见的"提升幅度"相当。因此：
 
-> **名单内模型（含 `removed_model` / `removed_model`）对上名单外基线时，存在约 0.006–0.015 的系统性优势，
+> **名单内模型对上名单外基线时，存在约 0.006–0.015 的系统性优势，
 > 与模型贡献无关。**
 
 #### 修复进度（2026-09-16 完成）
@@ -257,7 +257,7 @@ pykt 的做法是掩码平均池化（`que_base_model.py` 的 `get_avg_skill_emb
 **已接入池化（44 个注册模型中 37 个走 `concept_mode: multi`）**，包括
 `dkvmn dkt+ deep_irt stablekt sparsekt lefokt_akt robustkt dimkt skvmn atkt
 saint saint_plus atdkt dtransformer dkt_forget dkt_pebg hqaf keenkt ukt kqn`
-及原有的 `dkt sakt akt simplekt qikt iekt lpkt removed_model removed_model hd_* hdkt` 等。
+及原有的 `dkt sakt akt simplekt qikt iekt lpkt hd_* hdkt` 等。
 
 四个 trainer 另需把 `y.gather(-1, cshft.unsqueeze(-1))` 换成
 `pool_concept_predictions`——凡是"输出每概念一个概率、再按目标概念取值"的模型
@@ -367,7 +367,7 @@ python tests/test_no_target_leakage.py
 
 对 pykt 中存在的 25 个模型逐函数核对（AST 提取每个 `类.方法` 函数体，剥除
 docstring/注释后 diff，再人工判定每处差异属于框架适配还是真实分歧）。
-自研模型（`removed_model / removed_model / hd_* / freq_simplekt` 等）无权威实现可比，未纳入。
+自研模型（`hd_* / hdkt` 等）无权威实现可比，未纳入。
 
 原始 diff 行数只能当筛选信号：`simplekt` 371/372 行不同，最终判定完全忠实
 （类名 `simpleKT` → `SimpleKT` 导致整体行错位）。

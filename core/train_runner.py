@@ -45,7 +45,7 @@ MODEL_NAME_ALIASES = {
 # a model taking **kwargs -- silently absorbed.
 #
 # Grouped by who actually reads each one, because an ungrouped list is how this
-# accumulated nine dead entries from the deleted a removed model models before anyone
+# accumulated nine dead entries from the a model family that was later removed before anyone
 # noticed. tests/test_config_keys_are_consumed.py checks that every key in every
 # config block reaches one of these consumers, so a typo cannot hide here.
 NON_MODEL_CONFIG_KEYS = {
