@@ -299,7 +299,23 @@ def train_one_fold(
     # rather than the fold's directory so a five-fold run produces one file --
     # see save_model_info_once for the models where it legitimately produces
     # more.
-    model_info = collect_model_info(model, device=device)
+    model_info = collect_model_info(
+        model,
+        device=device,
+        # Lets every embedding table report which declared quantity its height
+        # came from. Wide on purpose: positional tables are sized by seq_len,
+        # LPKT's by num_at/num_it, DIMKT's by difficult_levels, and a narrower
+        # list reports all of those as anomalies.
+        vocab={
+            "num_c": dataset_cfg_local.get("num_c"),
+            "num_q": dataset_cfg_local.get("num_q"),
+            "max_concepts": dataset_cfg_local.get("max_concepts"),
+            "seq_len": train_cfg_local.get("seq_len"),
+            "num_at": model_cfg_local.get("num_at"),
+            "num_it": model_cfg_local.get("num_it"),
+            "difficult_levels": model_cfg_local.get("difficult_levels"),
+        },
+    )
     save_model_info_once(save_root, model_info, fold_id)
 
     # Resolve timestamp loading before any run overview/logging.

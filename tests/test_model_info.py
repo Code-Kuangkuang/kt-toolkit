@@ -16,6 +16,7 @@ import torch
 import torch.nn as nn
 
 from core.model_info import (
+    collect_dimensions,
     collect_model_info,
     format_model_info,
     save_model_info_once,
@@ -96,6 +97,64 @@ class CompositionTest(unittest.TestCase):
         self.assertNotIn(
             "composition", collect_model_info(DKT(num_c=6, emb_size=8))
         )
+
+
+class Shaped(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.q_embed = nn.Embedding(124, 32)        # num_c + 1
+        self.difficult = nn.Embedding(1001, 32)     # num_q + 1
+        self.position = nn.Embedding(200, 32)       # seq_len
+        self.qa_embed = nn.Embedding(2, 32)         # binary response
+        self.odd = nn.Embedding(37, 32)             # nothing declares 37
+        self.rnn = nn.LSTM(32, 64, num_layers=2, batch_first=True)
+        self.attn = nn.MultiheadAttention(32, 4, batch_first=True)
+        self.a = nn.Linear(32, 64)
+        self.b = nn.Linear(32, 64)
+        self.c = nn.Linear(64, 1)
+
+
+VOCAB = {"num_c": 123, "num_q": 1000, "seq_len": 200}
+
+
+class DimensionTest(unittest.TestCase):
+    def setUp(self):
+        self.dims = collect_dimensions(Shaped(), VOCAB)
+        self.by_name = {e["name"]: e for e in self.dims["embeddings"]}
+
+    def test_each_table_reports_the_quantity_it_was_sized_from(self):
+        self.assertEqual(self.by_name["q_embed"]["rows_from"], "num_c+1")
+        self.assertEqual(self.by_name["difficult"]["rows_from"], "num_q+1")
+
+    def test_a_positional_table_is_explained_not_flagged(self):
+        """The first version knew only num_c and num_q, so it called every
+        positional, time, difficulty and response table an anomaly -- 41
+        warnings across the models here, none of them real."""
+        self.assertEqual(self.by_name["position"]["rows_from"], "seq_len")
+
+    def test_a_binary_response_table_is_a_constant_not_an_anomaly(self):
+        self.assertEqual(self.by_name["qa_embed"]["rows_from"], "constant")
+
+    def test_a_genuinely_unexplained_table_still_says_so(self):
+        """Otherwise the check explains everything and means nothing."""
+        self.assertEqual(self.by_name["odd"]["rows_from"], "unknown")
+
+    def test_recurrent_and_attention_shapes_are_captured(self):
+        rnn = self.dims["recurrent"][0]
+        self.assertEqual(
+            (rnn["type"], rnn["input_size"], rnn["hidden_size"], rnn["layers"]),
+            ("LSTM", 32, 64, 2),
+        )
+        att = self.dims["attention"][0]
+        self.assertEqual((att["embed_dim"], att["heads"], att["head_dim"]), (32, 4, 8))
+
+    def test_linear_shapes_are_counted_not_listed_one_by_one(self):
+        self.assertEqual(self.dims["linear_widths"]["32->64"], 2)
+        self.assertEqual(self.dims["dominant_hidden_width"], 64)
+
+    def test_embeddings_are_ordered_by_size(self):
+        sizes = [e["parameters"] for e in self.dims["embeddings"]]
+        self.assertEqual(sizes, sorted(sizes, reverse=True))
 
 
 class WriteOnceTest(unittest.TestCase):

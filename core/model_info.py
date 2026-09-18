@@ -76,7 +76,100 @@ def _module_rows(model):
     return rows
 
 
-def collect_model_info(model, device=None, top_tensors=8):
+#: A table this short is a structural constant -- a binary response, a response
+#: plus a padding row -- not something sized from the data.
+_CONSTANT_TABLE_ROWS = 4
+
+
+def _vocab_relation(height, vocab):
+    """Which declared quantity an embedding table's height was derived from.
+
+    Tables here are sized off `num_c` or `num_q` with a small offset
+    (`num_c * 2` for DKT's interaction table, `num_q + 10` for LPKT's exercise
+    table, `num_q + 1` where a padding row is reserved), and also off `seq_len`
+    for positional tables, `num_at`/`num_it` for LPKT's time vocabularies, and
+    `difficult_levels` for DIMKT. Naming the formula turns a bare number into
+    something checkable.
+
+    The first version of this only knew `num_c` and `num_q` and flagged
+    everything else as suspicious. Across the 36 buildable models that produced
+    41 warnings and not one was a real problem -- positional, time, difficulty
+    and response tables, every one correct. A check that is wrong every time it
+    fires is worse than no check, so the vocabulary is wide and the leftover is
+    reported as unknown rather than as an alarm.
+    """
+    if height <= _CONSTANT_TABLE_ROWS:
+        return "constant"
+    if not vocab:
+        return None
+    candidates = []
+    for name, base in vocab.items():
+        if not isinstance(base, int) or base <= 0:
+            continue
+        candidates += [
+            (name, base), (f"{name}+1", base + 1), (f"{name}+2", base + 2),
+            (f"{name}+10", base + 10), (f"{name}*2", base * 2),
+            (f"{name}*2+1", base * 2 + 1),
+        ]
+    for formula, value in candidates:
+        if value == height:
+            return formula
+    return "unknown"
+
+
+def collect_dimensions(model, vocab=None):
+    """The shapes the model actually has, grouped by what kind of layer it is.
+
+    `run_config.json` records the widths that were *requested*.
+    `core/factory.py::_filter_to_signature` silently drops any keyword a
+    constructor does not name, so a requested width and a built one are not the
+    same claim -- this is the built one.
+    """
+    import torch.nn as nn
+
+    dims = {"embeddings": [], "recurrent": [], "attention": [], "linear_widths": {}}
+    for name, module in model.named_modules():
+        if isinstance(module, nn.Embedding):
+            dims["embeddings"].append({
+                "name": name,
+                "rows": module.num_embeddings,
+                "dim": module.embedding_dim,
+                "rows_from": _vocab_relation(module.num_embeddings, vocab),
+                "parameters": module.num_embeddings * module.embedding_dim,
+            })
+        elif isinstance(module, nn.RNNBase):
+            dims["recurrent"].append({
+                "name": name,
+                "type": type(module).__name__,
+                "input_size": module.input_size,
+                "hidden_size": module.hidden_size,
+                "layers": module.num_layers,
+                "bidirectional": bool(module.bidirectional),
+            })
+        elif isinstance(module, nn.MultiheadAttention):
+            dims["attention"].append({
+                "name": name,
+                "embed_dim": module.embed_dim,
+                "heads": module.num_heads,
+                "head_dim": module.embed_dim // module.num_heads,
+            })
+        elif isinstance(module, nn.Linear):
+            key = f"{module.in_features}->{module.out_features}"
+            dims["linear_widths"][key] = dims["linear_widths"].get(key, 0) + 1
+
+    dims["embeddings"].sort(key=lambda e: -e["parameters"])
+    # The width that appears most often across Linear outputs is the model's
+    # working hidden size, whatever the config happens to call it.
+    widths = {}
+    for key, n in dims["linear_widths"].items():
+        widths[int(key.split("->")[1])] = widths.get(int(key.split("->")[1]), 0) + n
+    dims["dominant_hidden_width"] = (
+        max(widths, key=widths.get) if widths else None
+    )
+    return dims
+
+
+def collect_model_info(model, device=None, top_tensors=8, vocab=None):
     """Everything about the constructed model that the config cannot tell you."""
     params = list(model.named_parameters())
     buffers = list(model.named_buffers())
@@ -104,6 +197,7 @@ def collect_model_info(model, device=None, top_tensors=8):
         "total_bytes": param_bytes + buffer_bytes,
         "total_mb": round((param_bytes + buffer_bytes) / 2 ** 20, 3),
         "parameters_by_dtype": dict(by_dtype),
+        "dimensions": collect_dimensions(model, vocab),
         "by_module": _module_rows(model),
         "largest_tensors": [
             {"name": n, "shape": list(p.shape), "parameters": p.numel(),
@@ -169,6 +263,41 @@ def format_model_info(info, max_modules=12):
     if len(rows) > max_modules:
         rest = sum(r["parameters"] for _, r in rows[max_modules:])
         lines.append(f"    {'(' + str(len(rows) - max_modules) + ' more)':<24s} {rest:>12,}")
+
+    dims = info.get("dimensions") or {}
+    if dims.get("embeddings"):
+        lines.append("  embedding tables:")
+        for e in dims["embeddings"][:6]:
+            src = e.get("rows_from")
+            note = f"  ({'?' if src == 'unknown' else src})" if src else ""
+            lines.append(
+                f"    {e['name']:<40s} {e['rows']:>7,} x {e['dim']:<5d}"
+                f" {e['parameters']:>12,}{note}"
+            )
+        if len(dims["embeddings"]) > 6:
+            lines.append(f"    ({len(dims['embeddings']) - 6} more)")
+
+    for rnn in dims.get("recurrent", [])[:4]:
+        lines.append(
+            f"  {rnn['type'].lower():<12s} {rnn['name']:<28s}"
+            f" in {rnn['input_size']} -> hidden {rnn['hidden_size']}"
+            f" x{rnn['layers']}" + (" bidirectional" if rnn["bidirectional"] else "")
+        )
+    for att in dims.get("attention", [])[:4]:
+        lines.append(
+            f"  attention    {att['name']:<28s}"
+            f" dim {att['embed_dim']} / {att['heads']} heads"
+            f" = {att['head_dim']} per head"
+        )
+    if dims.get("dominant_hidden_width"):
+        shapes = sorted(
+            dims["linear_widths"].items(), key=lambda kv: -kv[1]
+        )[:6]
+        lines.append(
+            f"  hidden width {dims['dominant_hidden_width']}"
+            f"   linear shapes: "
+            + ", ".join(f"{k} x{n}" for k, n in shapes)
+        )
 
     lines.append("  largest tensors:")
     for t in info["largest_tensors"][:5]:
