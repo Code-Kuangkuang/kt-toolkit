@@ -110,7 +110,33 @@ KNOWN_ALIGNMENT_VIOLATIONS = {}
 # covered by a training run.
 FITS_FROM_REAL_DATA = {
     "dimkt", "hqaf", "lpkt", "hdkt", "dkt_forget", "dgekt", "gkt", "dkt_pebg",
+    "denoisekt", "hcgkt", "mtkt",
 }
+
+
+def _synthetic_concept_map():
+    """[NUM_Q, MAX_CONCEPTS] of concept ids with -1 padding, as qmatrix yields."""
+    concept_map = torch.full((NUM_Q, MAX_CONCEPTS), -1, dtype=torch.long)
+    for question in range(NUM_Q):
+        concept_map[question, 0] = question % NUM_C
+    return concept_map
+
+
+def _synthetic_question_graph():
+    """A [NUM_Q, NUM_Q] stand-in for DenoiseKT's qmatrix-derived adjacency.
+
+    Its real graph connects questions sharing a concept and is then
+    symmetrically normalised (models/denoisekt_utils.py). A normalised ring plus
+    self-loops has the same shape, sparsity and row scaling, so the GCN hop is
+    genuinely exercised rather than reduced to an identity multiply.
+    """
+    ring = torch.eye(NUM_Q)
+    for node in range(NUM_Q):
+        ring[node, (node + 1) % NUM_Q] = 1.0
+        ring[node, (node - 1) % NUM_Q] = 1.0
+    inverse_sqrt_degree = ring.sum(1).clamp(min=1).rsqrt()
+    normalised = inverse_sqrt_degree[:, None] * ring * inverse_sqrt_degree[None, :]
+    return normalised.to_sparse().coalesce()
 
 # What those specs would have produced, at sizes this harness can use. Values are
 # arbitrary but must exceed the ids the synthetic batch generates.
@@ -119,6 +145,17 @@ COMPUTED_CONSTRUCTOR_ARGS = {
     "lpkt": {"num_at": 128, "num_it": 16},
     "hdkt": {"num_at": 128, "num_it": 16},
     "hqaf": {"num_type": 16},
+    # MTKT indexes the same three gap tables as dkt_forget.
+    "mtkt": {"num_rgap": 8, "num_sgap": 8, "num_pcount": 8, "num_pid": NUM_Q},
+    "denoisekt": {"matrix": _synthetic_question_graph()},
+    "hcgkt": {
+        "matrix": _synthetic_question_graph(),
+        "concept_map": _synthetic_concept_map(),
+        # Stands in for the downloaded BGE vectors; only its width matters here,
+        # since SFM_CL projects it through a Linear.
+        "concept_embedding": torch.randn(NUM_C, 32),
+        "num_pid": NUM_Q,
+    },
 }
 
 # train_runner.py:293 sets this from the resolved mode, and it decides whether

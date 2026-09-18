@@ -1,3 +1,11 @@
+"""Trainer adapter for the MTKT port.
+
+Same shape as core/trainers/stablekt_trainer.py -- `dcur` in, a tuple out whose
+first element is the prediction -- with one difference: MTKT also takes `dgaps`,
+the three log2-bucketed time features, assembled from the batch exactly as
+core/trainers/dkt_forget_trainer.py does.
+"""
+
 import numpy as np
 import torch
 from torch.nn.functional import binary_cross_entropy
@@ -5,12 +13,11 @@ from torch.nn.functional import binary_cross_entropy
 from core.registry import TRAINER_REGISTRY
 from core.trainer import BaseTrainer
 
+GAP_KEYS = ("rgaps", "sgaps", "pcounts", "shft_rgaps", "shft_sgaps", "shft_pcounts")
 
-# csKT has the same dcur-in / tuple-out shape as stableKT.
-@TRAINER_REGISTRY.register("cskt")
-@TRAINER_REGISTRY.register("sparsekt")
-@TRAINER_REGISTRY.register("stablekt")
-class StableKTTrainer(BaseTrainer):
+
+@TRAINER_REGISTRY.register("mtkt")
+class MTKTTrainer(BaseTrainer):
     def __init__(
         self,
         model,
@@ -54,36 +61,34 @@ class StableKTTrainer(BaseTrainer):
         return float(np.mean(losses)) if losses else 0.0
 
     def _forward_batch(self, batch, train=False):
-        dcur = _to_device_dict(batch, self.device)
-        rshft = dcur["shft_rseqs"].float()
-        sm = dcur["smasks"]
+        dcur = {
+            k: v.to(self.device) for k, v in batch.items() if torch.is_tensor(v)
+        }
+        missing = [k for k in GAP_KEYS if k not in dcur]
+        if missing:
+            raise ValueError(
+                f"MTKT requires the gap features {missing}; the dataloader was "
+                f"built without include_dkt_forget=True."
+            )
+        dgaps = {k: dcur[k] for k in GAP_KEYS}
 
-        result = self.model(dcur, train=train)
+        rshft = dcur["shft_rseqs"].float()
+        sm = dcur["smasks"].bool()
+
+        result = self.model(dcur, dgaps, train=train)
         preds = result[0] if isinstance(result, tuple) else result
-        preds_for_loss = _align_shifted_preds(preds, rshft)
-        loss = _masked_bce(preds_for_loss, rshft, sm)
+        preds_for_loss = preds[:, 1:] if preds.size(1) == rshft.size(1) + 1 else preds
+        if preds_for_loss.shape != rshft.shape:
+            raise ValueError(
+                f"MTKT prediction shape {tuple(preds.shape)} does not align with "
+                f"shifted targets {tuple(rshft.shape)}."
+            )
+
         pred = torch.masked_select(preds_for_loss, sm)
         target = torch.masked_select(rshft, sm)
+        if pred.numel() == 0:
+            return pred, target, preds.sum() * 0.0
+        loss = binary_cross_entropy(pred.double(), target.double())
+        if not torch.isfinite(loss):
+            raise FloatingPointError("MTKT produced a NaN/Inf loss.")
         return pred, target, loss
-
-
-def _to_device_dict(batch, device):
-    return {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()}
-
-
-def _align_shifted_preds(preds, target):
-    preds_for_loss = preds[:, 1:] if preds.size(1) == target.size(1) + 1 else preds
-    if preds_for_loss.shape != target.shape:
-        raise ValueError(
-            f"Prediction shape {tuple(preds.shape)} does not align with shifted targets {tuple(target.shape)}."
-        )
-    return preds_for_loss
-
-
-def _masked_bce(preds, target, mask):
-    y = torch.masked_select(preds.double(), mask)
-    t = torch.masked_select(target.double(), mask)
-    return binary_cross_entropy(y, t)
-
-
-SparseKTTrainer = StableKTTrainer

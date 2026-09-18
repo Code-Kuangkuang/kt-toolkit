@@ -27,6 +27,14 @@ from .stablekt import StableKT
 from .sparsekt import SparseKT
 from .dtransformer import DTransformerModel
 from .robustkt import RobustKT
+from .mockt import MoCKT
+from .fluckt import FlucKTModel
+from .denoisekt import DenoiseKT
+from .hcgkt import HCGKTModel
+from .extrakt import ExtraKT
+from .folibikt import FoLiBiKT
+from .cskt import CsKT
+from .mtkt import MTKTModel
 from .rekt import ReKT
 from .lefokt_akt import LEFOKT_AKT
 from .hqaf import HQAFKT
@@ -40,4 +48,4 @@ import plugins  # noqa: F401
 
 # Keep the public export aligned with the import-time model registration.
 
-__all__ = ["DKT", "DKTPEBG", "DKVMN", "AKT", "DKTPlus", "SAKT", "QIKTNet", "GKT", "DGEKT", "KQN", "ATKT", "IEKT", "HawkesKT", "LPKT", "HDKT", "DeepIRT", "SAINT", "SAINTp", "SimpleKT", "UKT", "KeenKT", "DKTForget", "SKVMN", "DIMKT", "ATDKT", "StableKT", "SparseKT", "DTransformerModel", "RobustKT", "ReKT", "LEFOKT_AKT", "HQAFKT"]
+__all__ = ["DKT", "DKTPEBG", "DKVMN", "AKT", "DKTPlus", "SAKT", "QIKTNet", "GKT", "DGEKT", "KQN", "ATKT", "IEKT", "HawkesKT", "LPKT", "HDKT", "DeepIRT", "SAINT", "SAINTp", "SimpleKT", "UKT", "KeenKT", "DKTForget", "SKVMN", "DIMKT", "ATDKT", "StableKT", "SparseKT", "DTransformerModel", "RobustKT", "MoCKT", "FlucKTModel", "DenoiseKT", "HCGKTModel", "ExtraKT", "FoLiBiKT", "CsKT", "MTKTModel", "ReKT", "LEFOKT_AKT", "HQAFKT"]

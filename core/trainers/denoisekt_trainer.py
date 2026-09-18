@@ -1,3 +1,12 @@
+"""Trainer adapter for the DenoiseKT port.
+
+`DenoiseKTNet.forward(cq, cc, cr)` wants the full-length sequences and returns
+predictions already sliced to `[:, 1:]`, so unlike the AKT-family trainers there
+is no shift to undo here. `cc` must keep its concept axis -- `boost_focus`
+compares whole concept sets between positions and `get_avg_skill_emb` averages
+over them -- which is why "denoisekt" is in MULTI_CONCEPT_MODELS.
+"""
+
 import numpy as np
 import torch
 from torch.nn.functional import binary_cross_entropy
@@ -6,14 +15,8 @@ from core.registry import TRAINER_REGISTRY
 from core.trainer import BaseTrainer
 
 
-# FlucKT has the same forward signature and the same (preds, reg_loss) return,
-# so it shares this trainer rather than getting a copy. MoC-KT does not: its
-# forward takes a leading sequence-length argument, hence mockt_trainer.py.
-@TRAINER_REGISTRY.register("extrakt")
-@TRAINER_REGISTRY.register("folibikt")
-@TRAINER_REGISTRY.register("fluckt")
-@TRAINER_REGISTRY.register("robustkt")
-class RobustKTTrainer(BaseTrainer):
+@TRAINER_REGISTRY.register("denoisekt")
+class DenoiseKTTrainer(BaseTrainer):
     def __init__(
         self,
         model,
@@ -57,20 +60,36 @@ class RobustKTTrainer(BaseTrainer):
         return float(np.mean(losses)) if losses else 0.0
 
     def _forward_batch(self, batch, train=False):
-        c_full = _full_sequence(batch, "cseqs", "shft_cseqs", self.device)
-        q_full = _full_sequence(batch, "qseqs", "shft_qseqs", self.device)
-        r_full = _full_sequence(batch, "rseqs", "shft_rseqs", self.device)
-        if c_full is None or q_full is None or r_full is None:
-            raise ValueError("RobustKT requires question, concept, and response sequences.")
+        cq = _full_sequence(batch, "qseqs", "shft_qseqs", self.device)
+        cc = _full_sequence(batch, "cseqs", "shft_cseqs", self.device)
+        cr = _full_sequence(batch, "rseqs", "shft_rseqs", self.device)
+        if cq is None or cc is None or cr is None:
+            raise ValueError("DenoiseKT requires question, concept, and response sequences.")
+        if cc.dim() == 2:
+            # boost_focus unpacks three axes; a 2-D concept tensor would fail
+            # there with a shape error rather than here with a reason.
+            cc = cc.unsqueeze(-1)
 
         rshft = batch["shft_rseqs"].to(self.device).float()
         sm = batch["smasks"].to(self.device)
-        preds, reg_loss = self.model(c_full.long(), r_full.long(), q_full.long())
-        y = _align_shifted_preds(preds, rshft)
-        loss = _masked_bce(y, rshft, sm, reg_loss)
-        pred = torch.masked_select(y, sm)
-        target = torch.masked_select(rshft, sm)
-        return pred, target, loss
+
+        preds, contrast_loss = self.model(cq.long(), cc.long(), cr.long())
+        if preds.shape != rshft.shape:
+            raise ValueError(
+                f"DenoiseKT prediction shape {tuple(preds.shape)} does not align "
+                f"with shifted targets {tuple(rshft.shape)}."
+            )
+
+        y = torch.masked_select(preds.double(), sm)
+        t = torch.masked_select(rshft.double(), sm)
+        if y.numel() == 0:
+            return y, t, preds.sum() * 0.0
+        loss = binary_cross_entropy(y, t)
+        if torch.is_tensor(contrast_loss):
+            loss = loss + contrast_loss
+        if not torch.isfinite(loss):
+            raise FloatingPointError("DenoiseKT produced a NaN/Inf loss.")
+        return y, t, loss
 
 
 def _full_sequence(batch, seq_key, shft_key, device, dtype=torch.long):
@@ -81,21 +100,3 @@ def _full_sequence(batch, seq_key, shft_key, device, dtype=torch.long):
     seqs = seqs.to(device).to(dtype)
     shft = shft.to(device).to(dtype)
     return torch.cat((seqs[:, 0:1], shft), dim=1)
-
-
-def _align_shifted_preds(preds, target):
-    preds_for_loss = preds[:, 1:] if preds.size(1) == target.size(1) + 1 else preds
-    if preds_for_loss.shape != target.shape:
-        raise ValueError(
-            f"Prediction shape {tuple(preds.shape)} does not align with shifted targets {tuple(target.shape)}."
-        )
-    return preds_for_loss
-
-
-def _masked_bce(preds, target, mask, extra_loss=None):
-    y = torch.masked_select(preds.double(), mask)
-    t = torch.masked_select(target.double(), mask)
-    loss = binary_cross_entropy(y, t)
-    if extra_loss is not None:
-        loss = loss + extra_loss
-    return loss

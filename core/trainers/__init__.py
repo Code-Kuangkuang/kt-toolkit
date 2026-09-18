@@ -25,6 +25,10 @@ from .atdkt_trainer import ATDKTTrainer  # noqa: F401
 from .stablekt_trainer import SparseKTTrainer, StableKTTrainer  # noqa: F401
 from .dtransformer_trainer import DTransformerTrainer  # noqa: F401
 from .robustkt_trainer import RobustKTTrainer  # noqa: F401
+from .mockt_trainer import MoCKTTrainer  # noqa: F401
+from .denoisekt_trainer import DenoiseKTTrainer  # noqa: F401
+from .hcgkt_trainer import HCGKTTrainer  # noqa: F401
+from .mtkt_trainer import MTKTTrainer  # noqa: F401
 from .rekt_trainer import ReKTTrainer  # noqa: F401
 from .hqaf_trainer import HQAFTrainer  # noqa: F401
 

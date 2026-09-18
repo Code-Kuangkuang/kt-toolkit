@@ -39,3 +39,9 @@ __pycache__
 .webui/
 .cache/
 logs/
+
+# HCGKT's concept-text BGE vectors: 3.1 MB of the paper authors' data, obtained
+# from their Google Drive (see models/kc_graph_utils.py). Not redistributed here.
+# The small kcs_context_*.json files ARE tracked -- they are what the concept
+# index alignment was verified against.
+utils/kc_embedding/*.npy

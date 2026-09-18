@@ -1,3 +1,13 @@
+"""Trainer adapter for the MoC-KT port.
+
+Identical to core/trainers/robustkt_trainer.py except for one thing: MoC-KT's
+`forward` takes a leading `s`, the true (unpadded) length of each sequence,
+which `FrequencyLayer` uses to pick one of three convolution kernels.
+
+`s` is computed from the padding mask only. It never touches `rseqs`, so no
+response value reaches the bucket choice.
+"""
+
 import numpy as np
 import torch
 from torch.nn.functional import binary_cross_entropy
@@ -6,14 +16,8 @@ from core.registry import TRAINER_REGISTRY
 from core.trainer import BaseTrainer
 
 
-# FlucKT has the same forward signature and the same (preds, reg_loss) return,
-# so it shares this trainer rather than getting a copy. MoC-KT does not: its
-# forward takes a leading sequence-length argument, hence mockt_trainer.py.
-@TRAINER_REGISTRY.register("extrakt")
-@TRAINER_REGISTRY.register("folibikt")
-@TRAINER_REGISTRY.register("fluckt")
-@TRAINER_REGISTRY.register("robustkt")
-class RobustKTTrainer(BaseTrainer):
+@TRAINER_REGISTRY.register("mockt")
+class MoCKTTrainer(BaseTrainer):
     def __init__(
         self,
         model,
@@ -61,16 +65,43 @@ class RobustKTTrainer(BaseTrainer):
         q_full = _full_sequence(batch, "qseqs", "shft_qseqs", self.device)
         r_full = _full_sequence(batch, "rseqs", "shft_rseqs", self.device)
         if c_full is None or q_full is None or r_full is None:
-            raise ValueError("RobustKT requires question, concept, and response sequences.")
+            raise ValueError("MoC-KT requires question, concept, and response sequences.")
 
         rshft = batch["shft_rseqs"].to(self.device).float()
         sm = batch["smasks"].to(self.device)
-        preds, reg_loss = self.model(c_full.long(), r_full.long(), q_full.long())
+        lengths = _true_lengths(batch, self.device)
+        preds, reg_loss = self.model(lengths, c_full.long(), r_full.long(), q_full.long())
         y = _align_shifted_preds(preds, rshft)
         loss = _masked_bce(y, rshft, sm, reg_loss)
         pred = torch.masked_select(y, sm)
         target = torch.masked_select(rshft, sm)
         return pred, target, loss
+
+
+def _true_lengths(batch, device):
+    """Unpadded length of each full sequence, as MoC-KT's bucket key.
+
+    pyKT computes this in its own `mockt_data_loader.py` as
+    `(rseqs != -1).sum(dim=1, keepdim=True).float()`, on the raw padded tensor.
+    That formula CANNOT be carried over literally: this repo pads `rseqs` with 0,
+    not -1 (0 is a valid id, which is why validity is read from `masks` -- see
+    AGENTS.md), so `!= -1` is true everywhere and every sequence would report the
+    full 200. All three length buckets would collapse into one and the mixture of
+    convolutions -- the entire contribution -- would silently become a single
+    kernel. Measured on assist2009 fold 0: pyKT's formula gives 200 for every row
+    where the true lengths are 23, 45, 30, 180, ...
+
+    `masks` covers the shifted sequence, so the full sequence is one longer.
+
+    Shape and dtype match pyKT's `[B, 1]` float deliberately: `FrequencyLayer`
+    branches on `s.shape[0] != 1` and calls `.squeeze(dim=0)` in the B=1 case,
+    which turns a `[B]` tensor into a 0-dim mask and breaks the batch indexing.
+    """
+    masks = batch.get("masks")
+    if masks is None or masks.numel() == 0:
+        raise ValueError("MoC-KT requires the sequence mask to bucket by length.")
+    masks = masks.to(device)
+    return (masks.sum(dim=1, keepdim=True) + 1).float()
 
 
 def _full_sequence(batch, seq_key, shft_key, device, dtype=torch.long):
