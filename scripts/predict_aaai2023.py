@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT))
 import models  # register models
 from core.config import load_cfg
 from core.factory import build_model
+from core.train_runner import NON_MODEL_CONFIG_KEYS
 
 
 app = typer.Typer(add_completion=False)
@@ -70,13 +71,14 @@ def _build_model_from_config(
         resolved_emb_type = emb_type or model_cfg.get("emb_type", "qid")
 
     model_cfg["emb_type"] = resolved_emb_type
-    excluded = {
-        "loss_c_all_lambda", "loss_q_all_lambda", "loss_c_next_lambda", "loss_q_next_lambda",
-        "output_mode", "output_c_all_lambda", "output_c_next_lambda", "output_q_all_lambda",
-        "output_q_next_lambda", "emb_type", "learning_rate", "use_timestamps", "dpath",
-        "num_at", "num_it", "booster_strategy", "require_fold_embedding",
+    # Shared with the runner rather than copied. The copy that used to live here
+    # had already fallen behind by three keys -- dataset_mode, concept_mode and
+    # eval_window -- which the signature filter in build_model happened to
+    # absorb, but two lists that must agree and do not is the failure waiting to
+    # be noticed.
+    model_kwargs = {
+        k: v for k, v in model_cfg.items() if k not in NON_MODEL_CONFIG_KEYS
     }
-    model_kwargs = {k: v for k, v in model_cfg.items() if k not in excluded}
     model = build_model(
         model_name,
         num_c=dataset_cfg["num_c"],

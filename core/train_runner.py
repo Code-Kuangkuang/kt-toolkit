@@ -39,6 +39,29 @@ MODEL_NAME_ALIASES = {
 }
 
 
+# Keys that live in a model's config block but are consumed by something other
+# than its constructor, so passing them on would either be a TypeError or -- for
+# a model taking **kwargs -- silently absorbed.
+#
+# Grouped by who actually reads each one, because an ungrouped list is how this
+# accumulated nine dead entries from the deleted a removed model models before anyone
+# noticed. tests/test_config_keys_are_consumed.py checks that every key in every
+# config block reaches one of these consumers, so a typo cannot hide here.
+NON_MODEL_CONFIG_KEYS = {
+    # Read by this runner.
+    "emb_type", "learning_rate", "use_timestamps", "dpath", "dataset_mode",
+    "num_at", "num_it",
+    # Read by the dataset builder.
+    "concept_mode", "eval_window",
+    # Read by strategies/dkt_pebg_strategy.py.
+    "booster_strategy", "require_fold_embedding",
+    # Read by the trainer through `other_config`, not by the model.
+    "loss_c_all_lambda", "loss_q_all_lambda", "loss_c_next_lambda",
+    "loss_q_next_lambda", "output_mode", "output_c_all_lambda",
+    "output_c_next_lambda", "output_q_all_lambda", "output_q_next_lambda",
+}
+
+
 def resolve_dataset_mode(model_name, train_cfg, model_cfg, overrides=None, spec=None):
     """Resolve the data mode.
 
@@ -227,17 +250,9 @@ def train_one_fold(
     # Migrated: every model that derives inputs now declares them in its own
     # `Inputs` spec, applied above. What remains below is the generic path.
 
-    # Filter out learning_rate and other_config parameters for model
-    other_config_keys = {"loss_c_all_lambda", "loss_q_all_lambda", "loss_c_next_lambda", "loss_q_next_lambda",
-                          "output_mode", "output_c_all_lambda", "output_c_next_lambda", "output_q_all_lambda",
-                          "output_q_next_lambda", "emb_type", "learning_rate", "use_timestamps", "dpath",
-                           "num_at", "num_it", "booster_strategy", "require_fold_embedding",
-                           "lambda_item_difficulty", "lambda_item_l2", "lambda_rel", "lambda_kl",
-                           "lambda_prior", "kl_warmup_epochs", "clean_prior",
-                           "lambda_move", "lambda_item", "dataset_mode",
-                           # Routed to the dataset builder, not the model.
-                           "concept_mode", "eval_window"}
-    model_kwargs = {k: v for k, v in model_cfg_local.items() if k not in other_config_keys}
+    model_kwargs = {
+        k: v for k, v in model_cfg_local.items() if k not in NON_MODEL_CONFIG_KEYS
+    }
     # Applied last so a spec wins over the legacy chain during the migration.
     model_kwargs.update(spec_inputs.model_kwargs)
     # A spec reports its own fit scope; `None` means it has nothing to declare.
