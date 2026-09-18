@@ -53,6 +53,40 @@ interactions would show up here as a consistent negative, and it does not. That
 is the precondition for the noise-slope experiment being interpretable at all,
 and it now holds.
 
+## A capacity difference the table does not show
+
+Found on 2026-09-18 by `core/model_info.py`, after these runs finished. On
+assist2009 (`num_q` = 17,737):
+
+| pair | backbone | composed | composed / backbone |
+|---|---|---|---|
+| `dkt` → `hd_dkt` | 395,523 | 4,584,255 | **11.59x** |
+| `akt` → `hd_akt` | 1,528,931 | 7,012,327 | **4.59x** |
+| `simplekt` → `hd_simplekt` | 5,773,313 | 11,256,709 | **1.95x** |
+
+Almost all of it is one tensor: the denoiser's own question-embedding table,
+`plugin.denoiser.item_embed.weight`, which is `num_q x d` and alone accounts for
+3.5M of HD-DKT's 4.6M parameters. It is separate from the backbone's own
+embedding, so a plugged model carries two.
+
+So these rows are not "backbone vs backbone + denoising". They are "backbone vs
+a 2-12x larger model that also denoises", and a reader will ask about it.
+
+Two things to say about it honestly:
+
+- The null result is not explained by under-capacity. Every HD model is strictly
+  larger and none of them wins.
+- The ordering runs the *wrong* way for a capacity story: the pair with the
+  least extra capacity (`simplekt`, 1.95x) is the only one with a positive
+  delta, and the pair with the most (`dkt`, 11.59x) is flat. If extra
+  parameters were driving anything here, it is not visible.
+
+A cleanly separated experiment would size the denoiser's item embedding to
+match, or share the backbone's -- `models/hdkt.py` already does the latter, via
+`exercise_projection` over the backbone's `e_embed`, while
+`modules/hd_denoiser.py` keeps its own table. That divergence between the two
+HD implementations is untouched.
+
 ## What makes this comparison valid
 
 Three fixes landed the same day, each of which had been a confound:

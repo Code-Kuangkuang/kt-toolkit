@@ -8,6 +8,7 @@ from rich import print
 
 from core.factory import build_dataset, build_model, build_trainer
 from core.dataset_names import is_hidden_label_dataset, normalize_dataset_name
+from core.model_info import collect_model_info, save_model_info_once
 from core.model_inputs import RunContext, spec_for
 from core.registry import MODEL_REGISTRY
 from core.run_support import (
@@ -294,11 +295,21 @@ def train_one_fold(
     # post-construction work any model needs, and it lives in its spec.
     model = spec.post_build(model, spec_ctx)
 
+    # What was built, as opposed to what was asked for. Written to save_root
+    # rather than the fold's directory so a five-fold run produces one file --
+    # see save_model_info_once for the models where it legitimately produces
+    # more.
+    model_info = collect_model_info(model, device=device)
+    save_model_info_once(save_root, model_info, fold_id)
+
     # Resolve timestamp loading before any run overview/logging.
     model_use_timestamps = model_cfg_local.get("use_timestamps", False)
     use_timestamps = bool(train_cfg_local.get("use_timestamps", False) or model_use_timestamps)
     train_cfg_local["use_timestamps"] = use_timestamps
-    print_run_overview(device, model, model_cfg_local, dataset_cfg_local, train_cfg_local)
+    print_run_overview(
+        device, model, model_cfg_local, dataset_cfg_local, train_cfg_local,
+        model_info=model_info,
+    )
 
     # Get dataset_mode from overrides (if specified)
     dataset_mode = train_cfg_local.get("dataset_mode")

@@ -109,12 +109,19 @@ def build_hooks(wandb_cfg, run_name, dataset_name, model_name, fold_id, train_cf
     return hooks
 
 
-def print_run_overview(device, model, model_cfg, dataset_cfg, train_cfg):
+def print_run_overview(device, model, model_cfg, dataset_cfg, train_cfg,
+                       model_info=None):
     from core.device_info import get_device_info
 
     info = get_device_info(device)
     print("Training on device:\n" + "\n".join(info.format_lines()))
     print(f"Model_Info:\n[green][bold]{model}[/bold][/green]\n")
+    if model_info is not None:
+        # The repr above says what the layers are; this says how big they are,
+        # which is what decides whether two runs are comparable.
+        from core.model_info import format_model_info
+
+        print(format_model_info(model_info) + "\n")
     print("Model_Config:\n" + json.dumps(model_cfg, indent=2, ensure_ascii=True) + "\n")
     print("Dataset_Config:\n" + json.dumps(dataset_cfg, indent=2, ensure_ascii=True) + "\n")
     print("Train_Config:\n" + json.dumps(train_cfg, indent=2, ensure_ascii=True) + "\n")
