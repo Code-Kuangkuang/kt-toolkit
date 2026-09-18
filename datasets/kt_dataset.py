@@ -190,20 +190,39 @@ def _filter_rows_by_folds(df, folds, sequence_path):
     )
 
 
-def _resolve_selectmasks(row, responses):
+def _resolve_selectmasks(row, responses, sequence_path=None):
     """Supervision mask for one sequence, as (mask, n_repeat_positions_dropped).
 
     Uses the provided selectmasks, or derives them from the responses when the
-    column is missing or the wrong length.  Positions flagged by `is_repeat` are
-    then set to -1 so they are not scored: they are the extra KC rows of a
-    question whose response is already visible earlier in the same sequence.
-    Question-level files carry no `is_repeat` column and are left untouched.
+    column is absent.  Positions flagged by `is_repeat` are then set to -1 so
+    they are not scored: they are the extra KC rows of a question whose response
+    is already visible earlier in the same sequence.  Question-level files carry
+    no `is_repeat` column and are left untouched.
+
+    A length mismatch raises rather than falling back.  Both fallbacks used to be
+    silent, and the `is_repeat` one was the dangerous half: a row whose flags did
+    not line up simply kept its repeated-KC positions scored, and returned
+    `dropped=0`, so `_report_repeat_filter` did not mention it either.  That is
+    the leak this function exists to close, reappearing without a word on exactly
+    the malformed input where it is least safe to guess.  Measured on assist2009
+    and algebra2005: zero rows mismatch, so raising costs nothing today and says
+    something the next time the preprocessing changes shape.
     """
+    def _fail(column, found, expected):
+        location = f" in {Path(sequence_path).name}" if sequence_path else ""
+        raise ValueError(
+            f"'{column}' has {found} entries against {expected} responses"
+            f"{location}. The supervision mask cannot be aligned, and guessing "
+            "here silently changes which positions are scored. Regenerate the "
+            "sequence files."
+        )
+
     raw_masks = None
     if "selectmasks" in row.index and row["selectmasks"]:
         parsed = [int(x) for x in row["selectmasks"].split(",")]
-        if len(parsed) == len(responses):
-            raw_masks = parsed
+        if len(parsed) != len(responses):
+            _fail("selectmasks", len(parsed), len(responses))
+        raw_masks = parsed
     if raw_masks is None:
         raw_masks = [1 if r != -1 else -1 for r in responses]
 
@@ -211,7 +230,7 @@ def _resolve_selectmasks(row, responses):
         return raw_masks, 0
     repeats = _parse_int_sequence(row["is_repeat"])
     if len(repeats) != len(raw_masks):
-        return raw_masks, 0
+        _fail("is_repeat", len(repeats), len(raw_masks))
     dropped = sum(1 for m, rep in zip(raw_masks, repeats) if rep == 1 and m != -1)
     return [-1 if rep == 1 else m for m, rep in zip(raw_masks, repeats)], dropped
 
@@ -377,7 +396,7 @@ class KTDataset(Dataset):
                 dori["qseqs"].append(questions)
             responses = _parse_int_sequence(row["responses"])
             dori["rseqs"].append(responses)
-            smask, n_repeat_dropped = _resolve_selectmasks(row, responses)
+            smask, n_repeat_dropped = _resolve_selectmasks(row, responses, sequence_path)
             dori["smasks"].append(smask)
             repeat_dropped += n_repeat_dropped
             scored_kept += sum(1 for m in smask if m != -1)
@@ -662,7 +681,7 @@ class KTQueDataset(Dataset):
                 dori["qseqs"].append(questions)
             responses = _parse_int_sequence(row["responses"])
             dori["rseqs"].append(responses)
-            smask, n_repeat_dropped = _resolve_selectmasks(row, responses)
+            smask, n_repeat_dropped = _resolve_selectmasks(row, responses, sequence_path)
             dori["smasks"].append(smask)
             repeat_dropped += n_repeat_dropped
             scored_kept += sum(1 for m in smask if m != -1)
