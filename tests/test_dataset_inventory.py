@@ -29,11 +29,11 @@ NO_DATA_ON_DISK = {
     "assist2015", "ednet5w", "poj", "pretrain",
 }
 
-# Raw data present, sequence files not built yet. `ednet` holds the KT1 release
-# -- 784,309 per-user CSVs -- but preprocessing also needs
-# data/ednet/contents/questions.csv, which carries the concepts and the answer
-# key. Until that lands, the directory exists and the declared files do not.
-RAW_ONLY = {"ednet"}
+# Raw data present, sequence files not built yet. `ednet` was here until
+# 2026-09-18, when EdNet-Contents.zip arrived and it was generated; `ednet5w`
+# would need the same run over 55,000 users instead of 5,000, which is roughly
+# 70 GB of windowed test files.
+RAW_ONLY = set()
 
 # Every remaining entry above still carries a `../data/...` dpath, a leftover
 # from an older directory layout. statics2011 had the same one until it was
