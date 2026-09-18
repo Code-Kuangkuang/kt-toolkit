@@ -10,6 +10,7 @@ import numpy as np
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 from core.registry import MODEL_REGISTRY
+from .backbone import Embeddings, SeqBatch, infer_valid_mask
 from .multi_concept import pool_concept_embeddings, pool_interaction_embeddings
 
 class Dim(IntEnum):
@@ -108,8 +109,21 @@ class AKT(nn.Module):
             qa_embed_data = self.qa_embed(target)+q_embed_data
         return q_embed_data, qa_embed_data
 
-    def forward(self, q_data, target, pid_data=None, qtest=False):
+    # -- Stages. See models/backbone.py for why these exist. --
+
+    def make_batch(self, q_data, target, pid_data=None, qtest=False, valid_mask=None):
+        if valid_mask is None:
+            valid_mask = infer_valid_mask(q_data)
+        return SeqBatch(
+            concepts=q_data,
+            responses=target,
+            questions=pid_data,
+            valid_mask=valid_mask,
+        )
+
+    def embed(self, batch):
         emb_type = self.emb_type
+        q_data, target, pid_data = batch.concepts, batch.responses, batch.questions
         # Batch First
         if emb_type.startswith("qid"):
             q_embed_data, qa_embed_data = self.base_emb(q_data, target)
@@ -135,18 +149,38 @@ class AKT(nn.Module):
         else:
             c_reg_loss = 0.
 
+        return Embeddings(
+            query=q_embed_data,
+            history=qa_embed_data,
+            extras={"pid_embed": pid_embed_data, "reg_loss": c_reg_loss},
+        )
+
+    def encode(self, emb):
         # BS.seqlen,d_model
         # Pass to the decoder
         # output shape BS,seqlen,d_model or d_model//2
-        d_output = self.model(q_embed_data, qa_embed_data, pid_embed_data)
+        return self.model(emb.query, emb.history, emb.extras["pid_embed"])
 
-        concat_q = torch.cat([d_output, q_embed_data], dim=-1)
+    def readout(self, hidden, emb):
+        concat_q = torch.cat([hidden, emb.query], dim=-1)
         output = self.out(concat_q).squeeze(-1)
         m = nn.Sigmoid()
-        preds = m(output)
+        return m(output)
+
+    def pack_output(self, preds, emb):
+        """What `forward` hands back, so a plugged variant returns the same
+        shape to the same trainer."""
+        return preds, emb.extras["reg_loss"]
+
+    def forward(self, q_data, target, pid_data=None, qtest=False):
+        emb = self.embed(self.make_batch(q_data, target, pid_data))
+        d_output = self.encode(emb)
+        preds = self.readout(d_output, emb)
+        c_reg_loss = emb.extras["reg_loss"]
         if not qtest:
             return preds, c_reg_loss
         else:
+            concat_q = torch.cat([d_output, emb.query], dim=-1)
             return preds, c_reg_loss, concat_q
 
 

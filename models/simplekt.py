@@ -5,6 +5,7 @@ import math
 import numpy as np
 from core.model_inputs import InputSpec
 from core.registry import MODEL_REGISTRY
+from .backbone import Embeddings, SeqBatch, infer_valid_mask
 from .multi_concept import pool_concept_embeddings, pool_interaction_embeddings
 
 
@@ -119,7 +120,9 @@ class SimpleKT(nn.Module):
             qa_embed_data = self.qa_embed(target) + q_embed_data
         return q_embed_data, qa_embed_data
 
-    def forward(
+    # -- Stages. See models/backbone.py for why these exist. --
+
+    def make_batch(
         self,
         qseqs,
         rseqs,
@@ -129,9 +132,15 @@ class SimpleKT(nn.Module):
         rshft,
         pidseqs=None,
         pidshft=None,
-        return_features=False,
+        valid_mask=None,
         **kwargs,
     ):
+        """Stitch the loader's (current, shifted) pairs back into full sequences.
+
+        The Rasch path needs question ids and raises without them, but only when
+        it runs; a concept-only dataset reaches here with `pid_data=None` and
+        that is legal, so the check stays in `embed` where the condition is.
+        """
         q = qseqs.long() if qseqs is not None else None
         c = cseqs.long() if cseqs is not None else q
         if c is None:
@@ -147,24 +156,41 @@ class SimpleKT(nn.Module):
         q_data = torch.cat((c[:, 0:1], cshft), dim=1)
         target = torch.cat((r[:, 0:1], rshft), dim=1)
 
+        if pidseqs is not None:
+            pid = pidseqs.long()
+            next_pid = pidshft.long() if pidshft is not None else qshft
+        else:
+            pid = q
+            next_pid = qshft
+        pid_data = (
+            torch.cat((pid[:, 0:1], next_pid), dim=1)
+            if pid is not None and next_pid is not None
+            else None
+        )
+
+        if valid_mask is None:
+            valid_mask = infer_valid_mask(q_data)
+        return SeqBatch(
+            concepts=q_data,
+            responses=target,
+            questions=pid_data,
+            valid_mask=valid_mask,
+        )
+
+    def embed(self, batch):
+        q_data, target, pid_data = batch.concepts, batch.responses, batch.questions
+
         # Base embeddings
         if self.emb_type.startswith("qid"):
             q_embed_data, qa_embed_data = self.base_emb(q_data, target)
 
         # Add problem difficulty
         if self.num_pid > 0 and self.emb_type.find("norasch") == -1:
-            if pidseqs is not None:
-                pid = pidseqs.long()
-                next_pid = pidshft.long() if pidshft is not None else qshft
-            else:
-                pid = q
-                next_pid = qshft
-            if pid is None or next_pid is None:
+            if pid_data is None:
                 raise ValueError(
                     "SimpleKT Rasch difficulty requires qseqs/shft_qseqs "
                     "or pidseqs/shft_pidseqs. Set num_pid=0 for concept-only data."
                 )
-            pid_data = torch.cat((pid[:, 0:1], next_pid), dim=1)
             if self.emb_type.find("aktrasch") == -1:
                 q_embed_diff_data = pool_concept_embeddings(
                     self.q_embed_diff, q_data, self.num_c
@@ -183,11 +209,46 @@ class SimpleKT(nn.Module):
                     qa_embed_diff_data + q_embed_diff_data
                 )
 
-        # Pass through transformer
-        d_output = self.model(q_embed_data, qa_embed_data)
+        return Embeddings(query=q_embed_data, history=qa_embed_data)
 
-        concat_q = torch.cat([d_output, q_embed_data], dim=-1)
-        output = self.out(concat_q).squeeze(-1)
+    def encode(self, emb):
+        # Pass through transformer
+        return self.model(emb.query, emb.history)
+
+    def _logits(self, hidden, emb):
+        concat_q = torch.cat([hidden, emb.query], dim=-1)
+        return self.out(concat_q).squeeze(-1)
+
+    def readout(self, hidden, emb):
+        """Probabilities, so that every backbone's `readout` returns the same
+        thing a plugin can hand straight back to a trainer."""
+        return torch.sigmoid(self._logits(hidden, emb))
+
+    def pack_output(self, preds, emb):
+        """What `forward` hands back, so a plugged variant returns the same
+        shape to the same trainer."""
+        return preds
+
+    def forward(
+        self,
+        qseqs,
+        rseqs,
+        cseqs,
+        qshft,
+        cshft,
+        rshft,
+        pidseqs=None,
+        pidshft=None,
+        return_features=False,
+        **kwargs,
+    ):
+        emb = self.embed(
+            self.make_batch(
+                qseqs, rseqs, cseqs, qshft, cshft, rshft, pidseqs, pidshft
+            )
+        )
+        d_output = self.encode(emb)
+        output = self._logits(d_output, emb)
 
         preds = torch.sigmoid(output)
         if return_features:
@@ -195,7 +256,7 @@ class SimpleKT(nn.Module):
                 "preds": preds,
                 "logits": output,
                 "hidden": d_output,
-                "question_embed": q_embed_data,
+                "question_embed": emb.query,
             }
         return preds
 

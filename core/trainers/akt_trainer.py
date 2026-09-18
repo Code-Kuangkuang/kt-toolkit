@@ -56,12 +56,26 @@ class AKTTrainer(BaseTrainer):
 
         return float(np.mean(losses)) if losses else 0.0
 
+    def _optional(self, batch, key):
+        """A sequence the loader may not have produced at all.
+
+        `KTQueDataset.__getitem__` omits an empty tensor rather than passing it
+        through, so a concept-only dataset such as statics2011 arrives with no
+        `qseqs` key. Indexing `batch["qseqs"]` raised KeyError on those; the
+        hand-written HD-AKT trainer had quietly fixed that for its own copy,
+        which is how the difference survived unnoticed.
+        """
+        value = batch.get(key)
+        if value is None or not value.numel():
+            return None
+        return value.to(self.device)
+
     def _forward_batch(self, batch):
-        qseqs = batch["qseqs"].to(self.device)
-        cseqs = batch["cseqs"].to(self.device)
+        qseqs = self._optional(batch, "qseqs")
+        cseqs = self._optional(batch, "cseqs")
         rseqs = batch["rseqs"].to(self.device)
-        qshft = batch["shft_qseqs"].to(self.device)
-        cshft = batch["shft_cseqs"].to(self.device)
+        qshft = self._optional(batch, "shft_qseqs")
+        cshft = self._optional(batch, "shft_cseqs")
         rshft = batch["shft_rseqs"].to(self.device).float()
         sm = batch["smasks"].to(self.device)
 

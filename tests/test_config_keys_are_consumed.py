@@ -51,11 +51,26 @@ RUNNER_SIDE_CONSUMERS = (
 )
 
 
+def _with_composed_parts(cls):
+    """`cls`, plus the classes it is assembled from, if it is a composition.
+
+    A model registered by `models/plugin.py::register_plugged` takes `**kwargs`
+    and splits them between a backbone and a plugin at construction time. Its
+    own MRO names none of their hyperparameters, so following `composed_of` is
+    the same accommodation this check already makes for a wrapper that forwards
+    `**kwargs` to its parent.
+    """
+    out = [cls]
+    for part in getattr(cls, "composed_of", ()):
+        out.extend(_with_composed_parts(part))
+    return out
+
+
 def _class_chain(name):
     """The model and trainer classes for `name`, with their full MROs."""
-    classes = [MODEL_REGISTRY.get(name)]
+    classes = _with_composed_parts(MODEL_REGISTRY.get(name))
     if name in TRAINER_REGISTRY.get_all():
-        classes.append(TRAINER_REGISTRY.get(name))
+        classes.extend(_with_composed_parts(TRAINER_REGISTRY.get(name)))
 
     seen, chain = set(), []
     for cls in classes:

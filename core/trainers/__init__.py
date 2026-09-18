@@ -1,10 +1,8 @@
 from .dkt_trainer import DKTTrainer  # noqa: F401
-from .hd_dkt_trainer import HDDKTTrainer  # noqa: F401
 from .dkt_pebg_trainer import DKTPEBGTrainer  # noqa: F401
 from .dkt_plus_trainer import DKTPlusTrainer  # noqa: F401
 from .dkvmn_trainer import DKVMNTrainer  # noqa: F401
 from .akt_trainer import AKTTrainer, LEFOKTAKTTrainer  # noqa: F401
-from .hd_akt_trainer import HDAKTTrainer  # noqa: F401
 from .sakt_trainer import SAKTTrainer  # noqa: F401
 from .qikt_trainer import QIKTTrainer  # noqa: F401
 from .gkt_trainer import GKTTrainer  # noqa: F401
@@ -18,7 +16,6 @@ from .hdkt_trainer import HDKTTrainer  # noqa: F401
 from .deep_irt_trainer import DeepIRTTrainer  # noqa: F401
 from .saint_trainer import SAINTTrainer, SAINTpTrainer  # noqa: F401
 from .simplekt_trainer import SimpleKTTrainer  # noqa: F401
-from .hd_simplekt_trainer import HDSimpleKTTrainer  # noqa: F401
 from .ukt_trainer import UKTTrainer  # noqa: F401
 from .keenkt_trainer import KeenKTTrainer  # noqa: F401
 from .dkt_forget_trainer import DKTForgetTrainer  # noqa: F401
@@ -30,3 +27,11 @@ from .dtransformer_trainer import DTransformerTrainer  # noqa: F401
 from .robustkt_trainer import RobustKTTrainer  # noqa: F401
 from .rekt_trainer import ReKTTrainer  # noqa: F401
 from .hqaf_trainer import HQAFTrainer  # noqa: F401
+
+# One mixin covers every plugged backbone; see core/trainers/plugin_trainer.py.
+from .plugin_trainer import (  # noqa: F401
+    HDAKTTrainer,
+    HDDKTTrainer,
+    HDSimpleKTTrainer,
+    PluginTrainer,
+)

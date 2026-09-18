@@ -87,7 +87,11 @@ class DKTTrainer(BaseTrainer):
         else:
             raise ValueError("DKTTrainer requires shft_cseqs or shft_qseqs.")
 
-        y = self.model(base_seqs, rseqs)
+        # DKT embeds concepts and ignores `item_data`; it is passed so that a
+        # plugged variant gating on item identity gets the question ids, which
+        # would otherwise never reach the model from this trainer.
+        item_data = qseqs if qseqs is not None and qseqs.numel() > 0 else None
+        y = self.model(base_seqs, rseqs, item_data=item_data)
 
         y, target_has_concept = pool_concept_predictions(
             y, target_idx, y.size(-1)

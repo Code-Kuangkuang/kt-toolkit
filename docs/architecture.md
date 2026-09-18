@@ -343,6 +343,82 @@ element-for-element identical, maximum difference 0.000e+00.
 | `gkt` | verified separately when it moved |
 | `dkt_forget`, `lpkt`, `hdkt`, `dkt_pebg`, `hawkes` | not run end to end -- `dkt_forget` and `lpkt`/`hdkt` need a `timestamps` column that assist2009's quelevel files do not have, `dkt_pebg` needs a booster embedding, `hawkes` needs `one_by_one` data. Covered by the contract suite and by construction |
 
+## Plugin Composition
+
+`InputSpec` fixed coupling *before* the model is built. A second kind of
+coupling sits *inside* it: HD-KT changes one tensor in the middle of a
+backbone's forward pass, and `dkt_pebg` warm-starts a backbone's question
+embeddings. Neither is a model; both were written as one anyway.
+
+HD-KT's cost was three model files and three trainer files -- 530 lines
+wrapping a 196-line denoiser -- because `hd_akt.py` could only insert its one
+multiplication by carrying a copy of `AKT.forward` around it. A copy is worse
+than coupling: it passes every test its author wrote and diverges the moment
+the original changes. All three copies had already diverged, silently.
+
+### The seam
+
+Backbones that a plugin targets name their stages (`models/backbone.py`):
+
+```text
+batch  = model.make_batch(**whatever its forward takes)
+emb    = model.embed(batch)        # ids -> query / history
+emb    = plugin.transform(emb)     # <- the only place a plugin acts
+hidden = model.encode(emb)
+preds  = model.readout(hidden, emb)
+```
+
+`forward` still takes exactly its old arguments and calls the stages in order,
+so the other 34 trainers are untouched. Only `dkt`, `akt` and `simplekt` are
+split; a backbone no plugin targets needs none of this.
+
+`register_plugged("hd_akt", backbone="akt", plugin=HDPlugin, ...)` then builds
+the registered model, and `PluginTrainer` mixes in front of the backbone's own
+trainer to add the plugin's loss term. Both are one line per pairing.
+
+No `register_forward_hook`. A hook needs no backbone changes at all, but it
+scales a tensor with nothing in the source saying so, and every other guardrail
+here exists to make a run auditable after the fact.
+
+### What the divergence had cost
+
+Found by making the composed models share their backbones' trainers:
+
+| Drift | Effect |
+|---|---|
+| all three HD trainers used float32 BCE; `dkt`/`akt`/`simplekt` use float64 | every HD-vs-baseline comparison differed in loss precision |
+| `HDSimpleKTTrainer` omitted SimpleKT's item L2 penalty | HD-SimpleKT was not SimpleKT plus denoising |
+| `HDAKTTrainer` added AKT's Rasch term outside `cal_loss` | same value, different composition order |
+| `AKTTrainer` indexed `batch["qseqs"]`; the HD copy used `.get` | plain `akt` raised KeyError on concept-only datasets such as statics2011 |
+
+The last one was a fix living only in the copy. Unifying propagated it
+backwards, so `akt` now runs on statics2011.
+
+### Equivalence
+
+| Checked | Result |
+|---|---|
+| `dkt`, `akt`, `simplekt` -- parameters, predictions, loss | bit-identical |
+| `hd_*` -- parameters and predictions | bit-identical |
+| `hd_*` -- loss | differs by ~2e-8, the float32 to float64 BCE change |
+
+The loss difference is intended. `tests/test_plugin_composition.py` asserts the
+*relationship* (`plugged loss == backbone loss + plugin term`, exactly) rather
+than a stored value, since a stored value is what let the three copies drift.
+
+### Not done, deliberately
+
+`dkt_pebg` is the other plugin-shaped model, and its artifact resolution is
+already decoupled -- `Inputs.prepare` plus `strategies/dkt_pebg_strategy.py`.
+Its embedding *loading* is still baked into the constructor, so PEBG can only
+ever boost DKT. Extracting a reusable pretrained-embedding source is worthwhile;
+collapsing `dkt_pebg` into `dkt` is not, because `use_original_pebg_dkt` is a
+structurally different model (`binary_seq` output, readout over
+`cat([h, next_qemb])`) and is there to reproduce the paper.
+
+A general plugin framework is not worth building on two examples. The test for
+a pattern is three independent instances.
+
 ## Dataset Inventory
 
 `configs/data_config.json` declares seventeen datasets. What is actually on disk

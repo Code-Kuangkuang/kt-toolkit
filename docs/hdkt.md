@@ -17,6 +17,30 @@ The `hdkt` variant follows the LPKT backbone exposed by the authors'
 same two causal detectors to the repository's existing DKT, AKT and SimpleKT
 backbones.
 
+### How the three backbone variants are built
+
+They are compositions, not separate models.  `models/hd_plugin.py` holds one
+`HDPlugin` and three registration lines; there is no `hd_akt.py`.  The plugin
+replaces `Embeddings.history` between the backbone's `embed` and `encode`
+stages, which `models/backbone.py` describes, and `core/trainers/plugin_trainer.py`
+adds the reconstruction term to whatever loss the backbone's own trainer
+computed.
+
+Adding a fourth backbone is one line, provided that backbone exposes the four
+stages:
+
+```python
+register_plugged("hd_dkvmn", backbone="dkvmn", plugin=HDPlugin,
+                 width_key="dim_s", width_default=200, spec=HDInputs)
+```
+
+This replaced three hand-written wrapper models and three hand-written
+trainers, each of which was a copy of its backbone's forward pass.  The copies
+had drifted: all three computed BCE in float32 where their baselines used
+float64, and the SimpleKT copy had dropped SimpleKT's item L2 penalty.  HD
+numbers produced before 2026-09-18 therefore differ from a baseline in ways
+unrelated to denoising and should not be compared against post-refactor runs.
+
 References:
 
 - Paper DOI: <https://doi.org/10.1145/3589334.3645718>
