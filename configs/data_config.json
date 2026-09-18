@@ -242,7 +242,10 @@
         "train_valid_file_quelevel": "train_valid_sequences_quelevel.csv",
         "test_file_quelevel": "test_sequences_quelevel.csv",
         "test_window_file_quelevel": "test_window_sequences_quelevel.csv",
-        "test_original_file_quelevel": "test_quelevel.csv"
+        "test_original_file_quelevel": "test_quelevel.csv",
+        "source": "Junyi Academy 2015 (full release)",
+        "sampling": "none",
+        "sampling_note": "247,606 students / 25,925,984 interactions after preprocessing, against 247,606 / 25,925,992 in the release. Not subsampled; the small gap and the 721 questions / 39 KCs against 722 / 41 come from dropping interactions whose exercise has no topic mapping. Published work uses widely different cuts of this release -- 72k students, 220k, 10,404, 87,527 -- so absolute numbers are not comparable without matching the pipeline."
     },
     "junyi_sub5k": {
         "dpath": "data/junyi_sub5k",
@@ -270,7 +273,10 @@
         "train_valid_original_file_quelevel": "train_valid_quelevel.csv",
         "train_valid_file_quelevel": "train_valid_sequences_quelevel.csv",
         "test_original_file_quelevel": "test_quelevel.csv",
-        "test_file_quelevel": "test_sequences_quelevel.csv"
+        "test_file_quelevel": "test_sequences_quelevel.csv",
+        "source": "junyi2015 (subsampled by this repository)",
+        "sampling": "equal-rank-strata-random-sample_v1_n5000_strata5_minlen3_seed3407",
+        "sampling_note": "5,000 students drawn from the 191,874 with at least 3 interactions, in 5 equal-rank strata by sequence length, 1,000 per stratum -- so the sampling rate is identical across strata and the length distribution is preserved, while stratification keeps the rare very long sequences (up to 22,067) from being missed by chance. Seeds 3407/3408/3409 for selection, split and folds. Measured against the full dataset: accuracy 0.8217 vs 0.8288, median length 63 vs 53, all 39 KCs covered, 660 of 718 questions. Built by scripts/build_junyi_sub5k.py; data/junyi_sub5k/subset_manifest.json holds the per-stratum record and source checksums. This matches no published protocol, so its numbers compare only against runs on itself."
     },
     "bridge2algebra2006": {
         "dpath": "data/bridge2algebra2006",

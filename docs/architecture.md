@@ -371,6 +371,33 @@ windowed split. The runner treats that as a dataset property and records
 `eval_window: false` rather than failing; a dataset that *declares* a windowed
 file and lacks it is incomplete and does fail.
 
+### Which datasets are samples
+
+Three are not the release they are named after, and say so in `source` and
+`sampling`:
+
+| Dataset | Drawn from | How |
+|---|---|---|
+| `ednet` | EdNet-KT1 (784,309 users) | seed 2, first 5,000 users found |
+| `ednet5w` | EdNet-KT1 | seed 2, skip those 5,000, take 50,000 |
+| `junyi_sub5k` | `junyi2015` (191,874 eligible users) | 5 equal-rank strata by sequence length, 1,000 each, seed 3407 |
+
+`junyi2015` itself is the full release -- 247,606 students and 25,925,984
+interactions against 247,606 and 25,925,992 published, the gap coming from
+dropping interactions whose exercise has no topic. It records `sampling: none`
+rather than omitting the field, since absence would be ambiguous.
+
+`junyi_sub5k`'s stratification takes an identical share from each length band,
+so the distribution is preserved while the rare very long sequences -- up to
+22,067 interactions -- cannot be missed by chance. Measured against the full
+dataset: accuracy 0.8217 against 0.8288, median length 63 against 53, all 39 KCs
+covered, 660 of 718 questions. It matches no published protocol, so its numbers
+compare only against runs on itself.
+
+That caveat is not specific to this repository. Published work on Junyi uses
+cuts ranging from 247,606 students down to 10,404, and reported figures across
+papers are not comparable without matching the pipeline.
+
 ## Model Contract Tests
 
 `tests/test_model_contracts.py` walks the registry rather than naming models, so

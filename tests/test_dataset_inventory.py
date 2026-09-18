@@ -237,3 +237,71 @@ class EdNetSamplingTest(unittest.TestCase):
 
         total = sum(p["take_users"] for p in SAMPLING.values())
         self.assertLess(total, 784_309)
+
+
+class ProvenanceTest(unittest.TestCase):
+    """A dataset that is a sample of another must say so in the config.
+
+    `ednet` and `ednet5w` are slices of EdNet-KT1; `junyi_sub5k` is a subsample
+    of `junyi2015` built here and matching no published protocol. Nothing in a
+    run's artifacts distinguished them from a full dataset, so a table could
+    place a 5,000-student cut beside a 247,606-student one without a hint, and a
+    paper could report "Junyi" or "EdNet" without saying which slice.
+    """
+
+    # Datasets that are not the full release they are named after.
+    SAMPLED = {"ednet", "ednet5w", "junyi_sub5k"}
+
+    def test_every_sampled_dataset_declares_its_source_and_plan(self):
+        for name in sorted(self.SAMPLED):
+            with self.subTest(dataset=name):
+                cfg = DATA_CONFIG[name]
+                self.assertIn("source", cfg)
+                self.assertIn("sampling", cfg)
+                self.assertNotEqual(
+                    cfg["sampling"], "none",
+                    f"{name} is a sample, so its plan cannot be 'none'.",
+                )
+
+    def test_a_sampled_dataset_names_what_it_was_drawn_from(self):
+        self.assertIn("EdNet-KT1", DATA_CONFIG["ednet"]["source"])
+        self.assertIn("junyi2015", DATA_CONFIG["junyi_sub5k"]["source"])
+
+    def test_the_full_dataset_says_it_is_not_sampled(self):
+        """Absence of a field would be ambiguous; 'none' is a statement."""
+        self.assertEqual(DATA_CONFIG["junyi2015"]["sampling"], "none")
+
+    def test_sampled_datasets_carry_a_note_a_reader_can_act_on(self):
+        for name in sorted(self.SAMPLED):
+            with self.subTest(dataset=name):
+                cfg = DATA_CONFIG[name]
+                if "sampling_note" not in cfg:
+                    continue
+                self.assertGreater(len(cfg["sampling_note"]), 80)
+
+    def test_the_junyi_subset_plan_matches_its_manifest(self):
+        """The config must not drift from what the builder actually recorded."""
+        manifest_path = Path(DATA_CONFIG["junyi_sub5k"]["dpath"]) / "subset_manifest.json"
+        if not manifest_path.exists():
+            self.skipTest("junyi_sub5k not built here")
+        selection = json.loads(manifest_path.read_text(encoding="utf-8"))["selection"]
+        expected = (
+            f"{selection['algorithm']}_v{selection['algorithm_version']}"
+            f"_n{selection['students']}_strata{selection['strata_count']}"
+            f"_minlen{selection['min_sequence_length']}_seed{selection['seed']}"
+        )
+        self.assertEqual(DATA_CONFIG["junyi_sub5k"]["sampling"], expected)
+
+    def test_the_junyi_strata_are_equally_allocated(self):
+        """Equal quotas over equal-rank strata is what preserves the length
+        distribution; unequal quotas would reshape it."""
+        manifest_path = Path(DATA_CONFIG["junyi_sub5k"]["dpath"]) / "subset_manifest.json"
+        if not manifest_path.exists():
+            self.skipTest("junyi_sub5k not built here")
+        selection = json.loads(manifest_path.read_text(encoding="utf-8"))["selection"]
+        taken = {s["selected_students"] for s in selection["strata"]}
+        self.assertEqual(len(taken), 1, f"strata took different counts: {taken}")
+        self.assertEqual(
+            sum(s["selected_students"] for s in selection["strata"]),
+            selection["students"],
+        )
