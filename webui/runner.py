@@ -17,6 +17,38 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = ROOT / ".webui" / "jobs.sqlite3"
 DEFAULT_SAVE_BASE = ROOT / ".webui" / "runs"
 
+# `save_dir` and `cv_run_dir` arrive from an HTTP request and become filesystem
+# paths: the first is created and written to, the second is walked for metrics
+# files. Unchecked, an absolute path was used as given and a relative one could
+# climb out with `..`, so a request could make the server write anywhere it has
+# permission, or read metrics from anywhere it can see.
+#
+# The server binds to 127.0.0.1 and adds no CORS middleware, so this is not
+# reachable from another origin today -- but `--host` exists, and containment is
+# cheaper to add now than to discover the need for later. Set
+# KT_WEBUI_ALLOWED_ROOTS (os.pathsep-separated) to permit writing outside the
+# project, which is the legitimate case this would otherwise block.
+def _allowed_roots():
+    roots = [ROOT.resolve()]
+    extra = os.environ.get("KT_WEBUI_ALLOWED_ROOTS", "")
+    roots.extend(Path(p).expanduser().resolve() for p in extra.split(os.pathsep) if p)
+    return roots
+
+
+def resolve_within_allowed_roots(value, default, label):
+    """Resolve a caller-supplied directory, refusing anything outside the roots."""
+    path = Path(value) if value else Path(default)
+    if not path.is_absolute():
+        path = ROOT / path
+    resolved = path.expanduser().resolve()
+    for root in _allowed_roots():
+        if resolved == root or root in resolved.parents:
+            return resolved
+    raise ValueError(
+        f"{label} resolves to {resolved}, which is outside the project. "
+        "Set KT_WEBUI_ALLOWED_ROOTS to allow another location."
+    )
+
 
 class JobRunner:
     def __init__(self, root=ROOT, db_path=None):
@@ -65,9 +97,9 @@ class JobRunner:
             raise ValueError(f"Unknown model: {model_name}")
 
         job_id = uuid.uuid4().hex[:12]
-        save_base = Path(request.get("save_dir") or DEFAULT_SAVE_BASE)
-        if not save_base.is_absolute():
-            save_base = self.root / save_base
+        save_base = resolve_within_allowed_roots(
+            request.get("save_dir"), DEFAULT_SAVE_BASE, "save_dir"
+        )
         run_dir = save_base / job_id
         run_dir.mkdir(parents=True, exist_ok=True)
         log_path = run_dir / "webui.log"
@@ -284,10 +316,9 @@ class JobRunner:
         request = job.get("request") or {}
         cv_run_dir = request.get("cv_run_dir")
         if cv_run_dir:
-            path = Path(cv_run_dir)
-            if not path.is_absolute():
-                path = self.root / path
-            return path
+            # Walked by collect_metrics, so an unchecked value is a read
+            # primitive over anything this process can see.
+            return resolve_within_allowed_roots(cv_run_dir, None, "cv_run_dir")
         return Path(job["save_dir"])
 
     def tail_log(self, job_id, lines=300):
