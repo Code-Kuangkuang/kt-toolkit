@@ -17,6 +17,35 @@ The `hdkt` variant follows the LPKT backbone exposed by the authors'
 same two causal detectors to the repository's existing DKT, AKT and SimpleKT
 backbones.
 
+### `hdkt` against `lpkt`
+
+`hdkt` keeps its own implementation rather than being composed, because LPKT's
+recurrent loop has no single history tensor to replace -- the gate multiplies
+the exercise, interval-time and answer-time embeddings before the loop starts.
+
+That makes it a fork, so it has to be held to the composed models' standard by
+test instead of by construction:
+`tests/test_hdkt_is_lpkt_plus_denoising.py` copies every shared weight from
+LPKT into HDKT, forces the gate to 1, and requires the two to agree bit for bit
+on scored positions.
+
+It did not, until 2026-09-18.  LPKT floors every concept weight at `gamma`
+(0.03, the Q-matrix smoothing from its paper) and holds `num_c + 1` knowledge
+slots; HDKT had a hard multi-hot over `num_c`.  The gap was 1.3e-3 in predicted
+probability on a synthetic batch -- indistinguishable, in a results table, from
+a denoising effect.  HDKT now takes the same `gamma` and the same slot count.
+
+Two things this does **not** cover, and that a table comparing the pair must
+still account for:
+
+- `configs/kt_config.json` gives `hdkt` a learning rate of 0.001 and `lpkt`
+  0.003.  Per-model tuning is normal, but for an ablation row it is a second
+  difference; run them at a matched rate or report both.
+- LPKT under `one_by_one` re-draws its initial knowledge state inside `forward`
+  (`models/lpkt.py`, the `xavier_uniform_` call), so its eval metrics are not
+  reproducible there.  The default config pins `all_in_one`, where the state is
+  a learned parameter, so this path is not reached -- but it is reachable.
+
 ### How the three backbone variants are built
 
 They are compositions, not separate models.  `plugins/hd.py` holds one

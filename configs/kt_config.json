@@ -325,6 +325,7 @@
     "d_a": 64,
     "d_e": 64,
     "d_k": 64,
+    "gamma": 0.03,
     "detector_hidden": 64,
     "latent_dim": 32,
     "dropout": 0.2,

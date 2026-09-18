@@ -112,6 +112,7 @@ class HDKT(nn.Module):
         d_a=64,
         d_e=64,
         d_k=64,
+        gamma=0.03,
         dropout=0.2,
         detector_hidden=None,
         latent_dim=None,
@@ -134,6 +135,11 @@ class HDKT(nn.Module):
         self.model_name = "hdkt"
         self.num_q = int(num_q)
         self.num_c = int(num_c)
+        # LPKT spreads the knowledge state over num_c + 1 slots; the extra
+        # one is never named by a concept list but still carries `gamma` of
+        # every update, so it is part of the model rather than padding.
+        self.num_state_slots = int(num_c) + 1
+        self.gamma = float(gamma)
         self.d_a = int(d_a)
         self.d_e = int(d_e)
         self.d_k = int(d_k)
@@ -183,7 +189,9 @@ class HDKT(nn.Module):
         self.linear_7 = nn.Linear(3 * d_k, d_k)
         self.linear_8 = nn.Linear(2 * d_k, d_k)
         self.dropout = nn.Dropout(dropout)
-        self.initial_knowledge = nn.Parameter(torch.empty(num_c, d_k))
+        self.initial_knowledge = nn.Parameter(
+            torch.empty(self.num_state_slots, d_k)
+        )
 
         self._init_weights()
 
@@ -196,7 +204,18 @@ class HDKT(nn.Module):
         nn.init.xavier_uniform_(self.initial_knowledge)
 
     def _concept_weights(self, concept_data, valid_mask):
-        """Build a safe multi-hot concept tensor [B, T, num_c]."""
+        """Concept weights over the knowledge state, matching LPKT exactly.
+
+        This used to be a hard multi-hot: a question's own KCs weighted 1 and
+        everything else 0. LPKT instead floors every weight at `gamma`, which is
+        the Q-matrix smoothing from its paper, and carries one extra state slot
+        that no concept list ever names.
+
+        The difference was small and invisible, and it meant `hdkt` against
+        `lpkt` measured denoising *plus* a different knowledge-component
+        weighting. tests/test_hdkt_is_lpkt_plus_denoising.py now pins the two
+        together; that test is what this method exists to satisfy.
+        """
         if concept_data.dim() == 2:
             concept_data = concept_data.unsqueeze(-1)
         if concept_data.dim() != 3:
@@ -206,9 +225,17 @@ class HDKT(nn.Module):
             )
         concept_valid = (concept_data >= 0) & (concept_data < self.num_c)
         safe_concepts = concept_data.clamp(min=0, max=self.num_c - 1)
-        one_hot = F.one_hot(safe_concepts, num_classes=self.num_c)
-        weights = (one_hot * concept_valid.unsqueeze(-1)).sum(dim=2)
-        weights = weights.clamp(max=1).to(self.initial_knowledge.dtype)
+        weights = torch.full(
+            (*concept_data.shape[:2], self.num_state_slots),
+            self.gamma,
+            dtype=self.initial_knowledge.dtype,
+            device=concept_data.device,
+        )
+        one_hot = F.one_hot(safe_concepts, num_classes=self.num_state_slots).to(
+            weights.dtype
+        )
+        present = (one_hot * concept_valid.unsqueeze(-1)).amax(dim=2)
+        weights = torch.where(present.bool(), torch.ones_like(weights), weights)
         return weights * valid_mask.unsqueeze(-1).to(weights.dtype)
 
     def _interaction_features(self, exercise_data, concept_data, responses):
@@ -420,11 +447,11 @@ class HDKT(nn.Module):
                 current_concepts.unsqueeze(-1) * learning_gain.unsqueeze(1)
             )
             repeated_gain = learning_gain.unsqueeze(1).expand(
-                -1, self.num_c, -1
+                -1, self.num_state_slots, -1
             )
             if self.use_time:
                 repeated_interval = interval.unsqueeze(1).expand(
-                    -1, self.num_c, -1
+                    -1, self.num_state_slots, -1
                 )
                 forgetting_gate = torch.sigmoid(
                     self.linear_4(
