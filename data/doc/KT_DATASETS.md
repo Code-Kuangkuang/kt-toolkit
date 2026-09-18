@@ -1,6 +1,6 @@
 # KT 数据集完整文档
 
-> 最后更新：2026-03-18
+> 最后更新：2026-09-18（第 5 节按磁盘实况重写；其余为 2026-03-18 原文）
 > 数据来源：pykt-toolkit + 本地预处理文件
 
 ---
@@ -58,8 +58,8 @@
 | 项目 | 内容 |
 |------|------|
 | **来源** | https://sites.google.com/site/assistmentsdata/home/2009-2010-assistment-data/skill-builder-data-2009-2010 |
-| **本地文件** | `dataset/assist2009/skill_builder_data_corrected_collapsed.csv` |
-| **预处理输出** | `dataset/assist2009/data.txt` |
+| **本地文件** | `data/assist2009/skill_builder_data_corrected_collapsed.csv` |
+| **预处理输出** | `data/assist2009/data.txt` |
 | **核心字段** | `user_id`, `problem_id`, `skill_id`, `correct` |
 | **可选字段** | - |
 | **特点** | 经典基线数据集，无时间信息 |
@@ -75,7 +75,7 @@
 | 项目 | 内容 |
 |------|------|
 | **来源** | https://sites.google.com/site/assistmentsdata/datasets/2012-13-school-data-with-affect |
-| **本地文件** | `dataset/assist2012/2012-2013-data-with-predictions-4-final.csv` |
+| **本地文件** | `data/assist2012/2012-2013-data-with-predictions-4-final.csv` |
 | **核心字段** | `user_id`, `problem_id`, `skill_id`, `correct`, `start_time`, `ms_first_response` |
 | **可选字段** | `ms_first_response` (答题耗时) |
 | **特点** | 包含 affect (情感) 数据，但预处理未提取 |
@@ -91,7 +91,7 @@
 | 项目 | 内容 |
 |------|------|
 | **来源** | https://sites.google.com/site/assistmentsdata/datasets/2015-assistments-skill-builder-data |
-| **本地文件** | `dataset/assist2015/2015_100_skill_builders_main_problems.csv` |
+| **本地文件** | `data/assist2015/2015_100_skill_builders_main_problems.csv` |
 | **核心字段** | `user_id`, `sequence_id` (作为 skill), `correct` |
 | **可选字段** | - |
 | **特点** | 无 question_id，以 sequence_id 替代；学生数最多 |
@@ -108,8 +108,8 @@
 | 项目 | 内容 |
 |------|------|
 | **来源** | https://sites.google.com/view/assistmentsdatamining/dataset |
-| **本地文件** | `dataset/assist2017/anonymized_full_release_competition_dataset.csv` |
-| **预处理输出** | `dataset/assist2017/data.txt` |
+| **本地文件** | `data/assist2017/anonymized_full_release_competition_dataset.csv` |
+| **预处理输出** | `data/assist2017/data.txt` |
 | **核心字段** | `studentId`, `problemId`, `skill`, `correct`, `startTime`, `timeTaken` |
 | **可选字段** | `timeTaken` (ms) |
 | **特点** | 数据量适中，包含答题时间 |
@@ -125,8 +125,8 @@
 | 项目 | 内容 |
 |------|------|
 | **来源** | https://pslcdatashop.web.cmu.edu/KDDCup/ |
-| **本地文件** | `dataset/algebra2005/algebra_2005_2006_master.txt` |
-| **预处理输出** | `dataset/algebra2005/data.txt` |
+| **本地文件** | `data/algebra2005/algebra_2005_2006_master.txt` |
+| **预处理输出** | `data/algebra2005/data.txt` |
 | **核心字段** | `Anon Student Id`, `Questions` (=Problem Name + Step Name), `KC(Default)`, `Correct First Attempt`, `First Transaction Time` |
 | **可选字段** | `First Transaction Time` |
 | **特点** | 题目数远大于 KC 数 (Q:KC ≈ 1500:1)，需要 concat problem+step 作为唯一题目 |
@@ -143,7 +143,7 @@
 | 项目 | 内容 |
 |------|------|
 | **来源** | https://pslcdatashop.web.cmu.edu/KDDCup/ |
-| **本地文件** | `dataset/bridge2algebra2006/bridge_to_algebra_2006_2007_train.txt` |
+| **本地文件** | `data/bridge2algebra2006/bridge_to_algebra_2006_2007_train.txt` |
 | **核心字段** | `Anon Student Id`, `Questions`, `KC(SubSkills)`, `Correct First Attempt`, `First Transaction Time` |
 | **可选字段** | `First Transaction Time` |
 | **特点** | 与 Algebra2005 格式相同，KC 数更多 (493) |
@@ -159,7 +159,7 @@
 | 项目 | 内容 |
 |------|------|
 | **来源** | https://github.com/riiid/ednet |
-| **本地文件** | `dataset/ednet/` (目录结构) |
+| **本地文件** | `data/ednet/`（已建好，见第 5 节） |
 | **核心字段** | `user_id`, `question_id`, `tags` (作为 skill), `correct`, `timestamp`, `elapsed_time` |
 | **可选字段** | `elapsed_time` |
 | **特点** | 规模最大 (1.3亿交互)，需采样使用；包含 tags (多知识点) |
@@ -175,7 +175,7 @@
 | 项目 | 内容 |
 |------|------|
 | **来源** | https://eedi.com/projects/neurips-education-challenge |
-| **预处理脚本** | `dataset/preprocess/nips_task34_preprocess.py` |
+| **预处理脚本** | `data/preprocess/nips_task34_preprocess.py` |
 | **核心字段** | `UserId`, `QuestionId`, `SubjectId_level3` (作为 skill), `IsCorrect`, `answer_timestamp` |
 | **可选字段** | `answer_timestamp` |
 | **特点** | 从 subject tree 取 leaf node 作为 KC；包含 metadata 文件 |
@@ -191,7 +191,7 @@
 | 项目 | 内容 |
 |------|------|
 | **来源** | Google Drive (见 pykt) |
-| **预处理脚本** | `dataset/preprocess/poj_preprocess.py` |
+| **预处理脚本** | `data/preprocess/poj_preprocess.py` |
 | **核心字段** | `User`, `Problem` (作为 skill), `Result` |
 | **可选字段** | - |
 | **特点** | 编程题数据集，Problem 充当 skill；无 question_id |
@@ -219,35 +219,37 @@
 
 ## 5. 本地数据集文件结构
 
-```
-dataset/
-├── algebra2005/
-│   ├── algebra_2005_2006_master.txt    # 原始数据
-│   ├── data.txt                         # 预处理后
-│   ├── keyid2idx.json                  # ID 映射
-│   └── train_valid_*.csv               # 训练集
-├── assist2009/
-│   ├── skill_builder_data_corrected_collapsed.csv
-│   ├── data.txt
-│   └── keyid2idx.json
-├── assist2012/
-│   └── 2012-2013-data-with-predictions-4-final.csv  # 巨大 (3GB)
-├── assist2015/
-│   └── 2015_100_skill_builders_main_problems.csv
-├── assist2017/
-│   ├── anonymized_full_release_competition_dataset.csv
-│   └── data.txt
-├── bridge2algebra2006/
-│   └── bridge_to_algebra_2006_2007_train.txt
-├── ednet/
-│   └── (KT1/, contents/ 结构)
-├── junyi2015/                           # 待下载
-├── preprocess/                          # 预处理脚本
-│   ├── assist2009_preprocess.py
-│   ├── algebra2005_preprocess.py
-│   └── ...
-└── docs/                               # 本文档
-```
+上一版这里是一棵手写的目录树，到 2026-09 已经与磁盘不符（写着 junyi2015「待下载」、
+ednet 只有 `KT1/ contents/` 结构，而两者都已建好）。手写树留不住，换成从磁盘可核对的
+状态表。
+
+`data/<数据集>/` 下的产物一律被 `.gitignore` 排除，仓库里只有本目录的文档。
+
+| 数据集 | data.txt | keyid2idx | 切分文件 | qmatrix |
+|---|:--:|:--:|:--:|:--:|
+| aaai2023 | – | ✅ | ✅ | – |
+| algebra2005 | ✅ | ✅ | ✅ | – |
+| assist2009 | ✅ | ✅ | ✅ | ✅ |
+| assist2012 | ✅ | ✅ | ✅ | – |
+| assist2015 | – | – | – | – |
+| assist2017 | ✅ | ✅ | ✅ | ✅ |
+| bridge2algebra2006 | ✅ | ✅ | ✅ | – |
+| ednet | ✅ | ✅ | ✅ | – |
+| junyi2015 | ✅ | ✅ | ✅ | – |
+| junyi_sub5k | – | ✅ | ✅ | – |
+| nips_task34 | ✅ | ✅ | ✅ | – |
+| slepemapy | ✅ | ✅ | ✅ | – |
+| statics2011 | ✅ | ✅ | ✅ | – |
+
+十三个里十二个已完整预处理，只有 assist2015 是空的。`qmatrix.npz` 只有两个数据集有，
+因为它由题目级切分产出，其余数据集没跑过那一步。
+
+**别在这里查数据集的来源和采样。** 每个数据集的 `source` / `sampling` /
+`sampling_note` 字段在 `configs/data_config.json` 里，`tests/test_dataset_inventory.py`
+会强制它们存在且自洽；三个「名字是全量、实际是样本」的数据集在
+`docs/architecture.md` 的 "Which datasets are samples" 一节有说明。那里是单一事实来源，
+本文件只描述格式与字段语义。
+
 
 ---
 
@@ -284,7 +286,7 @@ dataset/
 
 ```bash
 # 预处理单个数据集
-cd dataset/preprocess
+cd data/preprocess
 python -c "from assist2009_preprocess import read_data_from_csv; read_data_from_csv('../assist2009/skill_builder_data_corrected_collapsed.csv', '../assist2009/data.txt')"
 
 # 批量预处理 (参考 split_datasets.py)

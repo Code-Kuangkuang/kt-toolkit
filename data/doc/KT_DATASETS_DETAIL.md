@@ -1,6 +1,6 @@
 # KT 数据集完整文档 - 详细列信息
 
-> 最后更新：2026-03-18
+> 最后更新：2026-09-18（仅修正路径；列信息为 2026-03-18 原文）
 > 数据来源：pykt-toolkit + 本地原始文件分析
 
 ---
@@ -341,7 +341,7 @@ response_time = timeTaken
 ### 4.1 EdNet
 
 **来源**: https://github.com/riiid/ednet  
-**结构**: `dataset/ednet/`
+**结构**: `data/ednet/`
 
 **KT1 文件 (用户答题记录)**:
 | 列名 | 说明 | KT可用 | 类型 |
