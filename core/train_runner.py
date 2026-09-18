@@ -411,16 +411,26 @@ def train_one_fold(
         # Only reachable with allow_missing_test_loader, or on a hidden-label
         # dataset, both of which already explained themselves.
         pass
-    elif not window_filename or not os.path.exists(window_path):
-        # `eval_window` goes into the protocol block, so skipping quietly here
-        # produces a run that claims a pyKT-comparable windowed metric and does
-        # not have one. Either the file exists or the claim is withdrawn.
+    elif not window_filename:
+        # The dataset names no windowed file at all, which is how it says it has
+        # no windowed split -- junyi_sub5k is built that way. That is a property
+        # of the dataset rather than a broken run, so it continues; the claim is
+        # withdrawn below, where eval_window is reconciled with what happened.
+        print(
+            f"Dataset {dataset_name} declares no windowed test file, so this run "
+            "records eval_window=false and has no pyKT-comparable number."
+        )
+    elif not os.path.exists(window_path):
+        # Declared and absent is a different thing: the dataset is incomplete.
+        # `eval_window` goes into the protocol block, so continuing quietly would
+        # produce a run claiming a pyKT-comparable windowed metric it does not
+        # have. Either the file exists or the claim is withdrawn deliberately.
         window_test_loader = _loader_failed(
             "windowed test",
             FileNotFoundError(
-                f"no windowed test file at {window_path}. Generate it, or set "
-                "`eval_window: false` so the protocol block stops claiming a "
-                "windowed metric for this run."
+                f"{dataset_name} names {window_filename!r} but it is not at "
+                f"{window_path}. Regenerate it, or set `eval_window: false` so "
+                "the protocol block stops claiming a windowed metric."
             ),
         )
     else:
