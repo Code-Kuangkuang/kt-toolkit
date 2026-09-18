@@ -24,6 +24,8 @@ data/junyi2015/
 data/junyi_sub5k/
 data/nips_task34/
 data/peiyou
+data/statics2011/
+data/OLI_data/
 blog/
 experiment/
 export/

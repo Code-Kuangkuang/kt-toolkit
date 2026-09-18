@@ -189,7 +189,7 @@
         "test_original_file_quelevel": "test_quelevel.csv"
     },
     "statics2011": {
-        "dpath": "../data/statics2011",
+        "dpath": "data/statics2011",
         "num_q": 0,
         "num_c": 1223,
         "input_type": [
@@ -210,12 +210,7 @@
         ],
         "test_original_file": "test.csv",
         "test_file": "test_sequences.csv",
-        "test_window_file": "test_window_sequences.csv",
-        "train_valid_original_file_quelevel": "train_valid_quelevel.csv",
-        "train_valid_file_quelevel": "train_valid_sequences_quelevel.csv",
-        "test_file_quelevel": "test_sequences_quelevel.csv",
-        "test_window_file_quelevel": "test_window_sequences_quelevel.csv",
-        "test_original_file_quelevel": "test_quelevel.csv"
+        "test_window_file": "test_window_sequences.csv"
     },
     "junyi2015": {
         "dpath": "data/junyi2015",

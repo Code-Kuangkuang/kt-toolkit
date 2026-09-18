@@ -6,6 +6,7 @@ from .bridge2algebra2006 import run as bridge2algebra2006
 from .nips_task34 import run as nips_task34
 from .junyi2015 import run as junyi2015
 from .slepemapy import run as slepemapy
+from .statics2011 import run as statics2011
 
 ADAPTERS = {
     "assist2009": assist2009,
@@ -16,4 +17,5 @@ ADAPTERS = {
     "nips_task34": nips_task34,
     "junyi2015": junyi2015,
     "slepemapy": slepemapy,
+    "statics2011": statics2011,
 }

@@ -26,8 +26,13 @@ DATA_CONFIG = json.loads((ROOT / "configs" / "data_config.json").read_text(encod
 # (assist2015, poj, statics2011) also declare num_q = 0, meaning they carry
 # concepts only.
 NO_DATA_ON_DISK = {
-    "assist2015", "ednet", "ednet5w", "poj", "pretrain", "statics2011",
+    "assist2015", "ednet", "ednet5w", "poj", "pretrain",
 }
+
+# Every remaining entry above still carries a `../data/...` dpath, a leftover
+# from an older directory layout. statics2011 had the same one until it was
+# built on 2026-09-18, which is why none of them has ever run: the path is wrong
+# and nothing checked it.
 
 # `peiyou` is an alias: same config, same dpath, and normalize_dataset_name maps
 # it onto aaai2023. data/peiyou/ is an empty directory.
