@@ -113,21 +113,63 @@ class BaseTrainer:
         acc = metrics.accuracy_score(ts, prelabels)
         return {f"{prefix}_auc": auc, f"{prefix}_acc": acc}
 
+    #: Progress lines per epoch when stdout is a file rather than a terminal.
+    PROGRESS_CHECKPOINTS = 4
+
     def _print_progress(self, batch_idx, total_batches, loss):
-        """Print progress bar for training (one line, updates in place)."""
-        bar_len = 25
+        """Show training progress, in whichever form the destination can use.
+
+        A terminal redraws one line with `\\r`. A file cannot: every redraw
+        becomes another line, and a sweep always redirects to a file. That is
+        what made a single hd_akt log 447 KB across 10,250 lines, of which
+        roughly 8,900 were this bar and about 300 carried information -- so the
+        log was effectively unreadable by `grep` and useless by `tail`.
+
+        `isatty` was already consulted here, but only to decide whether to
+        flush. It decides whether to draw a bar at all.
+        """
+        last = batch_idx == total_batches - 1
         pct = int(100 * (batch_idx + 1) / total_batches)
+
+        if not sys.stdout.isatty():
+            # A handful of plain lines per epoch: enough to see a long run is
+            # alive and where it is, few enough to read around.
+            step = max(1, total_batches // self.PROGRESS_CHECKPOINTS)
+            if last or (batch_idx + 1) % step == 0:
+                print(
+                    f"  batch {batch_idx + 1}/{total_batches} "
+                    f"({pct:3d}%) | loss {loss:.4f}",
+                    flush=True,
+                )
+            return
+
+        bar_len = 25
         filled = int(bar_len * (batch_idx + 1) / total_batches)
         bar = "#" * filled + "-" * (bar_len - filled)
         line = f"  [{bar}] {pct:3d}% | Loss: {loss:.4f}"
-        if batch_idx == total_batches - 1:
+        if last:
             print("\r" + line + " " * 8, flush=True)
         else:
             print("\r" + line, end="", flush=True)
-            if not sys.stdout.isatty():
-                sys.stdout.flush()
+
+    @staticmethod
+    def _fmt_metric(value):
+        return "N/A" if value is None else f"{value:.4f}"
 
     def _log_epoch(self, metrics_dict):
+        if not sys.stdout.isatty():
+            # One greppable, sortable line per epoch. The boxed form below costs
+            # nine lines each, which on a 171-epoch run is 1,500 lines of frame
+            # around 700 lines of number.
+            parts = [f"epoch {metrics_dict.get('epoch', '?')}"]
+            if "train_loss" in metrics_dict:
+                parts.append(f"train_loss {metrics_dict['train_loss']:.4f}")
+            for key in ("valid_auc", "valid_acc"):
+                if key in metrics_dict:
+                    parts.append(f"{key} {self._fmt_metric(metrics_dict[key])}")
+            print(" | ".join(parts), flush=True)
+            return
+
         # Beautify output
         print("")
         print("=" * 50)

@@ -97,6 +97,36 @@ def train_one(dataset, model, fold, seed, save_root, extra_args, log_dir):
     return completed.returncode, elapsed, log_path
 
 
+def record_run(manifest_path, dataset, model, fold, seed, code, minutes,
+               log_path, train_args):
+    """Append one line per attempted cell to `<save_root>/manifest.jsonl`.
+
+    The per-cell duration and exit code used to be printed and nothing else, so
+    an overnight sweep's timings and failures lived only in a terminal
+    scrollback. Both are what you need afterwards: the timings decide how to
+    scale the next sweep -- on assist2009 the AKT pair was 89% of the wall clock
+    and that had to be recovered by reading timestamps off directory names --
+    and the failures are what you look for in the morning.
+
+    Appended immediately after each cell, so a sweep killed midway still leaves
+    a record of everything that finished.
+    """
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    row = {
+        "dataset": dataset,
+        "model": model,
+        "fold": fold,
+        "seed": seed,
+        "returncode": code,
+        "minutes": round(minutes, 2),
+        "log": str(log_path),
+        "train_args": train_args,
+        "finished_at": datetime.datetime.now().isoformat(timespec="seconds"),
+    }
+    with open(manifest_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
 def protocol_key(config):
     """Group runs by every field of the protocol block, not a subset.
 
@@ -255,11 +285,16 @@ def main():
                 print(f"  {d} / {m} / fold {f}")
             return 0
 
+        manifest_path = Path(args.save_root) / "manifest.jsonl"
         failures = []
         for i, (dataset, model, fold) in enumerate(todo, 1):
             print(f"[{i}/{len(todo)}] {dataset} / {model} / fold {fold} ...", flush=True)
             code, minutes, log_path = train_one(
                 dataset, model, fold, args.seed, args.save_root, extra, args.log_dir)
+            record_run(
+                manifest_path, dataset, model, fold, args.seed,
+                code, minutes, log_path, args.train_args,
+            )
             if code == 0:
                 print(f"      完成，用时 {minutes:.1f} 分钟")
             else:
@@ -269,7 +304,7 @@ def main():
             print(f"\n{len(failures)} 格失败：")
             for dataset, model, fold, log_path in failures:
                 print(f"  {dataset} / {model} / fold {fold}  →  {log_path}")
-        print()
+        print(f"\n每格的用时与退出码：{manifest_path}\n")
 
     return summarize(args.save_root, args.datasets, args.models,
                      args.folds, args.seed, args.out)

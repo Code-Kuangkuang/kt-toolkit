@@ -169,6 +169,10 @@ def train_one_fold(
     train_label_flip_seed = int(train_label_flip_seed)
     train_cfg_local["train_label_flip_ratio"] = train_label_flip_ratio
     train_cfg_local["train_label_flip_seed"] = train_label_flip_seed
+    # The seed arrives as a parameter, not through the config, but everything
+    # downstream that wants to stamp a row with the run's identity reads
+    # train_cfg. Without this, metrics.jsonl records seed=null.
+    train_cfg_local["seed"] = seed
 
     if train_cfg_local.get("patience") == -1:
         train_cfg_local["patience"] = None

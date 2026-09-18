@@ -67,7 +67,20 @@ def build_hooks(wandb_cfg, run_name, dataset_name, model_name, fold_id, train_cf
     hooks = [
         BestMetricsHook(metric_key="valid_auc", mode="max"),
         SaveBestHook(save_dir=ckpt_dir, filename=f"{model_name}_{emb_type}_model.pt"),
-        MetricsJsonlHook(os.path.join(ckpt_dir, "metrics.jsonl")),
+        MetricsJsonlHook(
+            os.path.join(ckpt_dir, "metrics.jsonl"),
+            # So the rows survive being concatenated across runs, instead of
+            # having to be attributed by parsing the directory path.
+            identity={
+                "dataset": dataset_name,
+                "model": model_name,
+                "fold": fold_id,
+                "seed": train_cfg.get("seed"),
+                "train_label_flip_ratio": train_cfg.get(
+                    "train_label_flip_ratio", 0.0
+                ),
+            },
+        ),
     ]
 
     if wandb_cfg:

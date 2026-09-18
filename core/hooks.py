@@ -1,4 +1,5 @@
 import copy
+import datetime
 import json
 import os
 import time
@@ -88,8 +89,24 @@ class BestMetricsHook(Hook):
 
 
 class MetricsJsonlHook(Hook):
-    def __init__(self, path):
+    """One JSON object per epoch, carrying enough identity to be concatenated.
+
+    Each line used to be `{valid_auc, valid_acc, train_loss, epoch, time}` and
+    nothing else, so `cat */metrics.jsonl` produced a file in which no row could
+    be attributed to a run. The only way to analyse across runs was to parse the
+    directory path, which makes every analysis script depend on a naming
+    convention -- and `saved_model/baseline_table`'s convention does not even
+    encode the label-flip ratio.
+
+    `time` was a bare unix float. What a reader actually wants is how long the
+    epoch took, which previously required subtracting adjacent rows.
+    """
+
+    def __init__(self, path, identity=None):
         self.path = path
+        #: dataset / model / fold / seed, merged into every row.
+        self.identity = dict(identity or {})
+        self._epoch_started = None
 
     @staticmethod
     def _json_safe(value):
@@ -108,10 +125,23 @@ class MetricsJsonlHook(Hook):
 
     def on_train_start(self, trainer):
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        self._epoch_started = time.time()
 
     def on_epoch_end(self, trainer, metrics):
-        payload = self._json_safe(metrics)
-        payload["time"] = time.time()
+        now = time.time()
+        payload = dict(self.identity)
+        payload.update(self._json_safe(metrics))
+        payload["epoch_seconds"] = (
+            round(now - self._epoch_started, 3)
+            if self._epoch_started is not None
+            else None
+        )
+        payload["finished_at"] = datetime.datetime.fromtimestamp(now).isoformat(
+            timespec="seconds"
+        )
+        # Kept so anything already reading `time` keeps working.
+        payload["time"] = now
+        self._epoch_started = now
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         with open(self.path, "a", encoding="utf-8") as f:
             f.write(json.dumps(payload, ensure_ascii=True) + "\n")
