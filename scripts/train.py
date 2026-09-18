@@ -79,6 +79,7 @@ def _load_completed_fold(
     model_name: str,
     train_label_flip_ratio: float,
     train_label_flip_seed: int,
+    seed: int,
 ):
     for run_config_path in sorted(cv_dir.glob("*/run_config.json")):
         run_dir = run_config_path.parent
@@ -103,6 +104,15 @@ def _load_completed_fold(
             continue
         if train_label_flip_ratio > 0 and saved_seed != train_label_flip_seed:
             continue
+        # The seed is part of what produced this number, so a run under a
+        # different one is a different experiment, not a completed fold.
+        if int(run_config.get("seed", -999)) != int(seed):
+            continue
+        # A run from before the protocol stamp existed cannot be shown to match
+        # the current one, so it is not reusable -- the same rule
+        # run_baseline_table.py applies before putting rows in a table.
+        if not run_config.get("protocol"):
+            continue
         return {
             "fold": fold_id,
             "run_name": run_config.get("run_name", run_dir.name),
@@ -110,9 +120,58 @@ def _load_completed_fold(
             "emb_type": run_config.get("emb_type"),
             "best_metrics": best_metrics,
             "best_path": _find_best_model_path(run_dir),
+            "protocol": run_config["protocol"],
+            "seed": int(run_config.get("seed", seed)),
             "skipped": True,
         }
     return None
+
+
+def _assert_one_protocol(fold_results):
+    """Refuse to average folds that were not produced the same way.
+
+    `--skip-completed 1` reuses a finished fold from the CV directory, matching
+    on dataset, model, fold and the label-flip settings. It used to stop there,
+    so changing anything else -- `score_repeated_kc`, `concept_mode`,
+    `pykt_transductive`, or regenerating the data -- and resuming would reuse the
+    old folds, run the rest under the new settings, and average the two together
+    into one reported mean.
+
+    That is precisely the protocol mixing the stamp exists to prevent, happening
+    in the one place that combines folds automatically, and announcing itself
+    only as "completed run found". The scopes are not knowable until a fold has
+    actually run, so the check belongs here, where they all are.
+    """
+    stamped = [r for r in fold_results if r.get("protocol")]
+    if len(stamped) < 2:
+        return
+
+    reference = stamped[0]
+    mismatches = []
+    for result in stamped[1:]:
+        diffs = {
+            key: (reference["protocol"].get(key), result["protocol"].get(key))
+            for key in set(reference["protocol"]) | set(result["protocol"])
+            if reference["protocol"].get(key) != result["protocol"].get(key)
+        }
+        if diffs:
+            mismatches.append((reference.get("fold"), result.get("fold"), diffs))
+
+    if not mismatches:
+        return
+
+    lines = [
+        "Folds in this run were produced under different protocols and cannot "
+        "be averaged:",
+    ]
+    for ref_fold, other_fold, diffs in mismatches:
+        for key, (a, b) in sorted(diffs.items()):
+            lines.append(f"  fold {ref_fold} {key}={a!r}  vs  fold {other_fold} {key}={b!r}")
+    lines.append(
+        "This usually means --skip-completed reused folds from before a settings "
+        "change. Use a fresh --cv-run-dir, or rerun the stale folds."
+    )
+    raise SystemExit("\n".join(lines))
 
 
 @app.command()
@@ -344,6 +403,7 @@ def main(
                     model_name,
                     train_label_flip_ratio,
                     resolved_flip_seed,
+                    seed,
                 )
                 if completed is not None:
                     print(f"\n[yellow]===== CV Fold {fid} skipped: completed run found =====[/yellow]\n")
@@ -352,6 +412,7 @@ def main(
             print(f"\n[bold]===== CV Fold {fid} / {fold_ids} =====[/bold]\n")
             fold_results.append(_train_one_fold(fid, save_root=cv_dir, cv_run_name=cv_run_name))
 
+        _assert_one_protocol(fold_results)
         agg = aggregate_fold_metrics(fold_results)
         cv_payload = {
             "cv_run_name": cv_run_name,

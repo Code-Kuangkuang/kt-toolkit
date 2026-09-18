@@ -607,4 +607,8 @@ def train_one_fold(
         "train_label_flip": train_label_flip_info,
         "best_metrics": best_metrics,
         "best_path": best_path,
+        # Carried so the cross-validation loop can check that every fold it is
+        # about to average was produced under the same protocol.
+        "protocol": run_config["protocol"],
+        "seed": seed,
     }
