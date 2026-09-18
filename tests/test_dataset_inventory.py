@@ -26,8 +26,14 @@ DATA_CONFIG = json.loads((ROOT / "configs" / "data_config.json").read_text(encod
 # (assist2015, poj, statics2011) also declare num_q = 0, meaning they carry
 # concepts only.
 NO_DATA_ON_DISK = {
-    "assist2015", "ednet", "ednet5w", "poj", "pretrain",
+    "assist2015", "ednet5w", "poj", "pretrain",
 }
+
+# Raw data present, sequence files not built yet. `ednet` holds the KT1 release
+# -- 784,309 per-user CSVs -- but preprocessing also needs
+# data/ednet/contents/questions.csv, which carries the concepts and the answer
+# key. Until that lands, the directory exists and the declared files do not.
+RAW_ONLY = {"ednet"}
 
 # Every remaining entry above still carries a `../data/...` dpath, a leftover
 # from an older directory layout. statics2011 had the same one until it was
@@ -62,6 +68,8 @@ def usable_datasets():
     for name, cfg in sorted(DATA_CONFIG.items()):
         if not isinstance(cfg, dict) or name in NO_DATA_ON_DISK or name in ALIASES:
             continue
+        if name in RAW_ONLY:
+            continue
         if name in PARTIAL:
             continue
         if Path(cfg.get("dpath", "")).is_dir():
@@ -81,7 +89,8 @@ class DeclaredStateTest(unittest.TestCase):
             if isinstance(cfg, dict) and not Path(cfg.get("dpath", "")).is_dir()
         }
         self.assertEqual(
-            absent, NO_DATA_ON_DISK,
+            absent, NO_DATA_ON_DISK | {n for n in RAW_ONLY
+                                       if not Path(DATA_CONFIG[n]["dpath"]).is_dir()},
             "the set of datasets declared without data on disk changed; update "
             "NO_DATA_ON_DISK, or the config is promising something new.",
         )
@@ -188,3 +197,43 @@ class ConceptWidthTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EdNetSamplingTest(unittest.TestCase):
+    """`ednet` and `ednet5w` are two slices of one release, not two datasets.
+
+    One shuffle of the KT1 user ids under seed 2 produces both: the first takes
+    the first 5,000 users found, the second skips those and takes the next
+    50,000. Nothing in the config used to say so, so a table could put them side
+    by side as if they were independent, and a paper could say "we use EdNet"
+    without saying which 0.6% or 6% of it.
+    """
+
+    def test_both_declare_where_they_came_from(self):
+        for name in ("ednet", "ednet5w"):
+            with self.subTest(dataset=name):
+                cfg = DATA_CONFIG[name]
+                self.assertEqual(cfg["source"], "EdNet-KT1")
+                self.assertIn("sampling", cfg)
+
+    def test_the_two_slices_are_distinguishable_in_an_artifact(self):
+        self.assertNotEqual(
+            DATA_CONFIG["ednet"]["sampling"],
+            DATA_CONFIG["ednet5w"]["sampling"],
+        )
+
+    def test_the_recorded_plan_matches_the_code(self):
+        """A config that drifts from the preprocessor is worse than no config."""
+        from preprocess.ednet_preprocess import SAMPLING
+
+        for name, plan in SAMPLING.items():
+            with self.subTest(dataset=name):
+                expected = (f"pykt_seed{plan['seed']}_skip{plan['skip_users']}"
+                            f"_take{plan['take_users']}")
+                self.assertEqual(DATA_CONFIG[name]["sampling"], expected)
+
+    def test_neither_slice_claims_to_be_the_whole_release(self):
+        from preprocess.ednet_preprocess import SAMPLING
+
+        total = sum(p["take_users"] for p in SAMPLING.values())
+        self.assertLess(total, 784_309)

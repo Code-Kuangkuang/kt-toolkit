@@ -7,18 +7,62 @@ from tqdm import tqdm
 KEYS = ["user_id", "tags", "question_id"]
 
 
-def read_data_from_csv(read_file, write_file,dataset_name=None):
-    if not dataset_name is None:
-        write_file = write_file.replace("/ednet/", f"/{dataset_name}/")
-        write_dir = read_file.replace("/ednet/", f"/{dataset_name}")
-        print(f"write_dir is {write_dir}")
-        print(f"write_file is {write_file}")
-    stares = []
+# `ednet` and `ednet5w` are not two datasets. Both are deterministic samples of
+# EdNet-KT1, cut from one shuffle of the user ids under a fixed seed:
+#
+#   ednet     the first 5,000 users encountered
+#   ednet5w   the next 50,000, skipping those same 5,000
+#
+# Same seed, so the two slices are disjoint and reproducible, and neither is the
+# full dataset -- KT1 holds 784,309 users. A paper saying "we use EdNet" has said
+# almost nothing; SAMPLING below is recorded into data_config.json so the
+# distinction survives into the artifacts rather than living in someone's memory.
+#
+# The id range scanned is 840,473 while only 784,309 files exist, so roughly
+# 56,000 ids have no file. That is why membership is decided by os.path.exists
+# and why "the first 5,000" means the first 5,000 *found*, not the first 5,000
+# shuffled ids.
+SAMPLING = {
+    "ednet": {"seed": 2, "skip_users": 0, "take_users": 5000},
+    "ednet5w": {"seed": 2, "skip_users": 5000, "take_users": 50000},
+}
+ID_RANGE = 840473
 
+
+def read_data_from_csv(read_file, write_file, dataset_name=None):
+    if dataset_name not in SAMPLING:
+        raise ValueError(
+            f"EdNet preprocessing needs dataset_name to be one of "
+            f"{sorted(SAMPLING)}, got {dataset_name!r}. The name selects which "
+            "slice of KT1 to take; there is no unsliced 'ednet'."
+        )
+    plan = SAMPLING[dataset_name]
+    wanted = plan["skip_users"] + plan["take_users"]
+
+    write_file = write_file.replace("/ednet/", f"/{dataset_name}/")
+    write_dir = read_file.replace("/ednet/", f"/{dataset_name}")
+    print(f"write_dir is {write_dir}")
+    print(f"write_file is {write_file}")
+
+    contents_path = os.path.join(read_file, 'contents', 'questions.csv')
+    if not os.path.exists(contents_path):
+        # Checked before the scan rather than after: the loop below walks 840k
+        # ids and takes many minutes, and KT1 carries no correct_answer or tags
+        # of its own, so without this file nothing downstream can be computed.
+        raise FileNotFoundError(
+            f"EdNet question metadata not found at {contents_path}. KT1 records "
+            "only timestamp/solving_id/question_id/user_answer/elapsed_time, so "
+            "the concepts (`tags`) and the answer key (`correct_answer`) both "
+            "come from here. Download EdNet-Contents.zip (174 KB) from "
+            "http://base.ustc.edu.cn/data/EdNet/ and extract it so that "
+            f"{os.path.join(read_file, 'contents')} exists."
+        )
+
+    stares = []
     file_list = list()
 
-    random.seed(2)
-    samp = [i for i in range(840473)]
+    random.seed(plan["seed"])
+    samp = [i for i in range(ID_RANGE)]
     random.shuffle(samp)
 
     count = 0
@@ -33,21 +77,30 @@ def read_data_from_csv(read_file, write_file,dataset_name=None):
             file_list.append(df)
             count = count + 1
 
-        if dataset_name == "ednet" and count == 5000:
-            start_i = 0
+        if count == wanted:
             break
-        elif dataset_name == "ednet5w" and count == 50000+5000:
-            start_i = 5000
-            break
-        
+
     print(f"total user num: {count}")
-    all_sa = pd.concat(file_list[start_i:])
+    if count < wanted:
+        # `start_i` used to be assigned only inside the break branches, so a
+        # short KT1 fell out of the loop and died on a NameError at the concat
+        # below -- after walking all 840k ids, with a message naming neither the
+        # cause nor the fix.
+        raise ValueError(
+            f"{dataset_name} needs {wanted:,} users ({plan['skip_users']:,} "
+            f"skipped + {plan['take_users']:,} taken) but only {count:,} KT1 "
+            f"files were found under {os.path.join(read_file, 'KT1')}. "
+            "The full KT1 release holds 784,309; extract all of it."
+        )
+
+    all_sa = pd.concat(file_list[plan["skip_users"]:])
     print(f"after sub all_sa: {len(all_sa)}")
     all_sa["index"] = range(all_sa.shape[0])
-    ca = pd.read_csv(os.path.join(read_file, 'contents', 'questions.csv'))
+    ca = pd.read_csv(contents_path)
     
-    if not dataset_name is None:
-        read_file = write_dir 
+    # From here on, write to the slice's own directory rather than back into the
+    # shared KT1 tree.
+    read_file = write_dir
 
     all_sa.to_csv(os.path.join(read_file, 'ednet_sample.csv'), index=False)
     ca['tags'] = ca['tags'].apply(lambda x:x.replace(";","_"))
