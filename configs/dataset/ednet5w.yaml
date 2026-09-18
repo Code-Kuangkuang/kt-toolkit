@@ -11,6 +11,12 @@ dataset_name: ednet5w
 # Requires data/ednet/contents/questions.csv, which carries the concepts (tags)
 # and the answer key; KT1 alone has neither. EdNet-Contents.zip, 174 KB, from
 # http://base.ustc.edu.cn/data/EdNet/
+#
+# data/ednet/KT1/ was deleted on 2026-09-18 once the sequences were built: 2.9 GB
+# across 784,309 per-user files, none of which the training path reads, and all
+# of whose content already sits in ednet_sample_process.csv. Only regeneration
+# needs it back -- EdNet-KT1.zip, 1.2 GB, from the same index. contents/ is kept
+# because it is 174 KB and regeneration cannot start without it.
 raw_path: data/ednet
 dpath: data/ednet5w
 configf: configs/data_config.json
