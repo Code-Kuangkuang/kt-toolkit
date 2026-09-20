@@ -15,13 +15,66 @@ for datasets, models, trainers, and the WebUI.
   in `core/`.
 - Data layer: cleaning adapters, preprocessing utilities, and PyTorch datasets.
 - Model layer: KT model implementations in `models/`. One registered model per
-  file; shared neural building blocks live in `modules/`.
+  file; the layers several models share (`transformer_FFN`, `ut_mask`,
+  `pos_encode`, `get_clones`) live in `models/utils.py`. `modules/` is not that
+  drawer -- it holds two self-contained components that are not models and not
+  shared layers: `hd_denoiser.py` and `pebg_torch.py`.
 - Composition layer: `plugins/` holds things that modify a backbone without
   being a model (HD-KT's denoiser gate), and `strategies/` holds things that
   decide which artifact a model loads (DKT-PEBG's booster). Both produce or
   configure registered models without appearing in `models/`.
 - Artifact layer: checkpoints, run configs, metrics JSONL, CV summaries, and
   logs.
+
+## Helper Modules
+
+There is no shared `utils` package and adding one has been considered and
+declined. `utils/` at the repo root is a **data** directory -- it has no
+`__init__.py` and holds `kc_embedding/`, the BGE vectors and KC context JSON
+that HCGKT loads.
+
+The rule instead: **a helper lives in the package that owns it**, and how it is
+imported depends on whether it touches data files -- not on whether the caller
+is in the same package.
+
+- **Pure code** (`models/utils.py`, `preprocess/utils.py`: layers, masks,
+  string formatting) -- module-level relative import, `from .utils import
+  ut_mask` at the top of `models/sakt.py`.
+- **Anything that reads a data file** (all five `*_utils` modules below) -- a
+  deferred import **inside the method body**, essentially always
+  `Inputs.prepare`. `models/gkt.py:131` does `from models.gkt_utils import
+  get_gkt_graph` inside the spec, not at line 1, and `models/lpkt.py:88` does
+  the same for `datasets.lpkt_utils`.
+
+This is rule 3 in `core/model_inputs.py`. It keeps `import models` cheap -- no
+graph is built and no CSV is read merely by importing the registry -- and it
+stops `models/` from importing `datasets/` at module level, which would let a
+future `datasets -> models` import close a cycle.
+
+`datasets/feature_utils.py` and `datasets/lpkt_utils.py` are the two consumed
+from `models/`. They sit in `datasets/` because what they produce is derived
+from the data files, not from the model.
+
+| module | holds | imported by |
+|---|---|---|
+| `preprocess/utils.py` | `sta_infos`, `write_txt`, `format_list2str`, `change2timestamp`, `replace_text` | 13 files in `preprocess/` (12 × `*_preprocess.py`, plus `aaai2022_competition.py`) |
+| `models/utils.py` | `transformer_FFN`, `ut_mask`, `pos_encode`, `get_clones`; the DKT-PEBG pretrained-matrix loaders | `atdkt`, `cskt`, `denoisekt`, `hcgkt`, `mtkt`, `sakt`, `dkt_pebg` |
+| `models/gkt_utils.py` | `get_gkt_graph` and the transition/dense builders | `gkt` |
+| `models/dgekt_utils.py` | `build_dgekt_graphs`, the hypergraph construction | `dgekt`, `tests/test_dgekt.py` |
+| `models/kc_graph_utils.py` | question--question adjacency and question--concept maps rebuilt from `qmatrix.npz` | `denoisekt`, `hcgkt` |
+| `datasets/lpkt_utils.py` | `generate_time2idx`, the answer/interval time binning | `lpkt`, `hdkt` (deferred) |
+| `datasets/feature_utils.py` | 17 functions: item and concept difficulty log-odds, DIMKT difficulty levels, DKT-Forget gap statistics, HQAF feature maps | `datasets/kt_dataset.py`; `dimkt`, `dkt_forget`, `hqaf`, `mtkt`, `nullkt`, `simplekt` (deferred) |
+
+Why this is worth stating rather than consolidating: a single-owner helper next
+to its owner is findable from the owner. `models/gkt_utils.py` moved into a
+shared drawer would put GKT's graph construction one directory away from the
+only file that calls it, and would collide in name with `models/utils.py` and
+`preprocess/utils.py`, which are different modules that happen to share a
+filename.
+
+Anything derived from data belongs to `datasets/feature_utils.py` and must be
+fitted on the current fold's training folds only -- see the `feature_fit_scope`
+field in the protocol stamp.
 
 ## Training Flow
 

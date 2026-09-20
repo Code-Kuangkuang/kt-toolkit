@@ -18,12 +18,14 @@ KT-Toolkit 是一个基于 PyTorch 的知识追踪研究工具箱，覆盖数据
 
 先阅读与任务直接相关的文件，不要只凭文件名推断行为。推荐顺序：
 
-1. `README.md` 和 `docs/architecture.md`
+1. `README.md` 和 `docs/architecture.md`（尤其 "Model Input Specs" 与 "Model Contract Tests" 两节）
 2. `scripts/train.py`
 3. `core/train_runner.py` 和 `core/trainer.py`
-4. `datasets/init_dataset.py` 和 `datasets/kt_dataset.py`
-5. 目标模型及其 Trainer
-6. `configs/kt_config.json` 和 `configs/data_config.json`
+4. `core/model_inputs.py`：`InputSpec` / `ModelInputs` / `RunContext` 声明协议
+5. `datasets/init_dataset.py` 和 `datasets/kt_dataset.py`
+6. 目标模型及其 Trainer
+7. `configs/kt_config.json` 和 `configs/data_config.json`
+8. `tests/test_model_contracts.py`：它遍历整个注册表，新增模型会自动被它检查
 
 开始修改前执行：
 
@@ -65,6 +67,26 @@ scripts/train.py
 - Trainer：`@TRAINER_REGISTRY.register("<model_name>")` + `core/trainers/__init__.py`
 - Dataset builder：`@DATASET_REGISTRY.register("<dataset_name>")`
 
+**模型自述其输入需求，runner 不按模型名分支。** `core/train_runner.py` 中不存在
+`if model_name == ...`；每个模型用嵌套类声明自己要什么：
+
+```python
+class Inputs(InputSpec):
+    dataset_mode = "all_in_one"        # 或 "one_by_one"
+    requires_question_ids = True
+    needs_num_pid = True
+
+    @classmethod
+    def prepare(cls, ctx):             # 只在需要从数据派生产物时覆盖
+        ...                            # 图、难度表、时间桶等
+        return inputs
+```
+
+新增模型时不要回到 runner 里加分支；缺什么就在 `Inputs` 里声明。`prepare` 派生的
+特征必须通过 `feature_fit_scope` / `graph_scope` 声明拟合范围
+（`"none"` / `"train_folds"` / `"train_valid_test"`），这三个值会进 `protocol_stamp`，
+`scripts/run_baseline_table.py` 按它分组——协议不同的 fold 不会被平均到一起。
+
 ## 4. KT 数据契约
 
 常见 batch 字段：
@@ -76,12 +98,32 @@ scripts/train.py
 - `masks`：有效输入位置。
 - `smasks`：参与 loss 和 metric 的 shifted 有效位置。
 - `tseqs` / `itseqs`：可选时间特征。
+- `rgaps` / `sgaps` / `pcounts` 及其 `shft_` 版本：log2 分桶的时间间隔特征，
+  仅当 `Inputs.prepare` 设置 `dataset_kwargs={"include_dkt_forget": True}` 时才存在
+  （`dkt_forget`、`mtkt`、`fakt` 用它）。表高 `num_rgap` / `num_sgap` / `num_pcount`
+  由 `prepare` 计算后作为构造参数传入。
+
+**有效位置只能从 `masks` / `smasks` 读，不能靠哨兵值反推。** `rseqs` 到达 Trainer 时
+是 float 的 0/1，padding 位是 `0.0`——`0` 同时是合法作答，所以任何
+`(rseqs != -1)`、`(rseqs >= 0)` 之类的判据都会把整条序列判成有效。上游 pykt 的
+CSV 用 `-1` 填充作答，照搬它的长度公式在本仓库会让每行都返回满长度。
+实测 assist2009 fold 0：`(rseqs != -1).sum(1)` 每行都是 199，而
+`masks.sum(1) + 1` 给出真实长度 58 / 200 / 200 / 8 / 200。
+`masks` 覆盖 shifted 序列，所以完整序列长度是 `masks.sum(1) + 1`。
+同理，`qseqs` / `cseqs` 的 padding 是 `-1`，`0` 是合法 ID。
 
 数据模式：
 
 - `KTDataset`：单知识点序列，通常为 `[B, T]`。
 - `KTQueDataset`：题目级多知识点序列，`cseqs` 原始形状通常为 `[B, T, K]`，填充值为 `-1`。
-- 某些模型通过 `concept_mode="first"` 将多知识点降为首知识点；不要默认所有模型都能接收 `[B, T, K]`。
+- 模型拿到 `[B, T]` 还是 `[B, T, K]`，由 `datasets/init_dataset.py` 的
+  `MULTI_CONCEPT_MODELS` 决定：在集合内的模型收到 `[B, T, K]`，需要用
+  `models/multi_concept.py` 的 `pool_concept_embeddings` /
+  `pool_interaction_embeddings` 做掩码均值池化；不在集合内的走 `concept_mode="first"`，
+  只读第一个知识点。
+- **两者的结果不可直接比较。** 新增模型若不加入该集合，会静默变成"只读首知识点"，
+  与同批对比模型跑在不同的概念协议上。`dataset_mode` 同理由
+  `ALL_IN_ONE_DATASET_MODELS` / `ONE_BY_ONE_DATASET_MODELS` 决定。
 
 修改模型或 Trainer 前必须写清楚张量流，例如：
 
@@ -109,14 +151,32 @@ masked target  [N_valid]
 
 新增模型默认执行以下步骤：
 
-1. 在 `models/<model_name>.py` 实现并注册模型。
+1. 在 `models/<model_name>.py` 实现并注册模型，**包含嵌套的 `class Inputs(InputSpec)`**。
 2. 在 `models/__init__.py` 导入模型。
 3. 在 `core/trainers/<model_name>_trainer.py` 实现并注册 Trainer。
 4. 在 `core/trainers/__init__.py` 导入 Trainer。
 5. 在 `configs/kt_config.json` 增加默认超参数。
 6. 确认 `configs/data_config.json` 中目标数据集包含所需字段。
-7. 必要时在 `datasets/init_dataset.py` 指定数据模式或特征构造。
-8. 完成注册检查、张量 smoke test 和单 epoch 训练检查。
+7. 在 `datasets/init_dataset.py` 把模型名加入 `ALL_IN_ONE_DATASET_MODELS`
+   （或 `ONE_BY_ONE_DATASET_MODELS`），多知识点模型还要加入 `MULTI_CONCEPT_MODELS`。
+8. 若新增了需要被扫参的超参数名，加入 `core/run_support.py::apply_overrides` 的白名单；
+   不在名单里的 key 会抛 `KeyError`。
+9. 若 `Inputs.prepare` 需要读真实数据（图、难度表、时间桶），在
+   `tests/test_model_contracts.py` 的 `FITS_FROM_REAL_DATA` 登记，并在
+   `COMPUTED_CONSTRUCTOR_ARGS` 给出等价的合成参数。
+10. 跑 `python -m pytest`，再做单 epoch 训练检查。
+
+移植上游模型（pykt 等）时的附加约定：
+
+- **上游类原样保留**，注册、`Inputs`、参数改名放在文件末尾的 adapter 子类里
+  （见 `models/mtkt.py`、`models/fakt.py`），这样以后 diff 上游仍然可读。
+- 文件 docstring 写明来源与抓取日期，并逐条记录你相对上游做了哪些改动、为什么。
+- 超参数对着上游自己的 sweep 配置核（`examples/seedwandb/<model>.yaml`），不要凭经验填。
+  凭经验配错过四次，每次都要跑完才发现。
+- 常见上游缺陷：模块级 `device = cuda if available`、硬编码 `.cuda()`、
+  普通属性存张量导致 `model.to()` 搬不走、`emb_type` 门控把论文的核心模块整个关掉。
+  改设备相关代码时按作用域核实，不要只做文本替换——函数内的 `device = query.device`
+  是正确的遮蔽，不该动。
 
 模型实现规则：
 
@@ -219,6 +279,18 @@ python scripts/train.py --dataset-name assist2009 --model-name dkt --fold 0 --se
 python scripts/train.py --dataset-name assist2009 --model-name dkt --fold 0 --num-epochs 1 --use-wandb 0 --save-dir saved_model/smoke
 ```
 
+测试套件（`unittest discover` 会收集到 0 个用例却报成功，必须用 pytest）：
+
+```bash
+python -m pytest -q
+```
+
+只跑遍历全注册表的契约测试：
+
+```bash
+python -m pytest -q tests/test_model_contracts.py
+```
+
 注册检查：
 
 ```bash
@@ -243,6 +315,10 @@ python -m py_compile models/<model_name>.py core/trainers/<model_name>_trainer.p
 ### 模型或 Trainer
 
 - 执行 `py_compile` 和注册检查。
+- **跑 `python -m pytest`。** `tests/test_model_contracts.py` 遍历整个注册表，
+  对每个模型查九项：注册配对、config 块、构造、前后向、pred/target/smasks 对齐、
+  梯度有限、eval 确定性、未来 response 不影响过去预测、CPU 构造不跑到 GPU。
+  新增模型没接好会直接让这一套变红。
 - 构造小型 batch 执行 forward/backward。
 - 检查 prediction/target shape 相同。
 - 检查 loss、gradient 和输出均为 finite。
