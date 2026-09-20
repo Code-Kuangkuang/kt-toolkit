@@ -1,4 +1,5 @@
 import os
+import random
 from collections import defaultdict
 
 import numpy as np
@@ -361,3 +362,298 @@ def _to_time_bin(value, edges, num_time_bins):
         return 0
     idx = int(np.searchsorted(np.asarray(edges, dtype=float), np.log1p(float(value)), side="right"))
     return max(0, min(int(num_time_bins) - 1, idx))
+
+
+def compute_item_difficulty_logodds(dpath, train_valid_file, num_q, folds=None,
+                                    alpha=10.0, grouping=None, group_seed=3407):
+    """Per-question empirical difficulty as a standardised log-odds vector.
+
+    Answers a question the learned Rasch scalar raises: SimpleKT's `qid_scalar`
+    variant learns one number per question, and on assist2009 that number is
+    0.91-correlated (within concept, Spearman) with the question's training-fold
+    correct rate.  If the gradient is only recovering a count, the count can be
+    supplied directly and the parameter frozen -- which is what this table is
+    for.  See docs/results_item_parameterisation.md.
+
+    Shape is `[num_q + 1]`, matching `Embedding(num_pid + 1, 1)`; the last row is
+    the padding slot and stays at 0.
+
+    Three choices worth stating, because each one moves the numbers:
+
+    * **Shrinkage.** A raw correct rate is undefined at `total == 0` and wild at
+      `total == 1`; assist2009 has 2,023 questions seen exactly once in a fold's
+      training rows.  The rate is shrunk toward the global rate with strength
+      `alpha`, i.e. `(correct + alpha*p0) / (total + alpha)`, so a question's
+      estimate moves away from the prior only as evidence accumulates.
+
+    * **Centring on `logit(p0)`, not on the mean.** This makes an unseen question
+      come out at exactly 0, which is what the *learned* table does for the same
+      questions -- `SimpleKT.reset()` starts every row at 0 and an unseen row
+      gets no gradient.  Centring on the mean instead would hand unseen items a
+      nonzero difficulty, which is a different model, not a frozen version of
+      this one.
+
+    * **Scale is normalised away.** The vector is divided by its own standard
+      deviation over seen questions, because the term it feeds is
+      `difficult_param * q_embed_diff[c]` and `q_embed_diff` is learnable: the
+      model can set the overall magnitude itself.  What is frozen is the
+      *relative ordering and spacing* of questions, which is the hypothesis
+      under test.
+
+    Counts every response that is not `-1`, matching
+    `compute_dimkt_difficulty_maps` above, so the two difficulty features in this
+    repository are derived from the same rows.
+
+    With `grouping="concept"` the shrinkage target stops being the global rate
+    and becomes the item's own concept group, minus the item itself. That is the
+    variant under test: on a dataset where most items are seen too few times to
+    measure -- algebra2005 averages 3.3 responses per item and only 4.1% reach
+    ten -- the global rate is the same number for everyone and carries no item
+    information, while the group's rate at least says which neighbourhood the
+    item sits in. `grouping="random"` keeps the group sizes and reshuffles the
+    members, and is the control that says whether the concept partition itself
+    is doing the work.
+    """
+    tables = compute_difficulty_logodds_tables(
+        dpath, train_valid_file, folds=folds, num_q=num_q, alpha=alpha,
+        grouping=grouping, group_seed=group_seed,
+    )
+    return tables["items"]
+
+
+def _standardised_logodds(correct, total, p0, alpha, target=None):
+    """The shared core of the difficulty tables. See the caller for the choices.
+
+    `target` is what each row is shrunk *towards*. Scalar `p0` by default, which
+    is the global rate; pass a `[len(correct)]` array to shrink each item
+    towards its own group's rate instead. Centring stays on `p0` either way, so
+    an unseen row still comes out at exactly 0 and still matches what the
+    learned table does for the same row.
+    """
+    seen = total > 0
+    if target is None:
+        target = p0
+    target = np.clip(np.asarray(target, dtype=np.float64), 1e-6, 1 - 1e-6)
+    smoothed = (correct + alpha * target) / np.maximum(total + alpha, 1e-12)
+    smoothed = np.clip(smoothed, 1e-6, 1 - 1e-6)
+    logodds = np.log(smoothed / (1.0 - smoothed)) - np.log(p0 / (1.0 - p0))
+    scale = float(logodds[seen].std())
+    if scale > 0:
+        logodds = logodds / scale
+    logodds[~seen] = 0.0
+    logodds[-1] = 0.0  # padding slot
+    return logodds.astype(np.float32)
+
+
+def _leave_one_out_group_rate(correct, total, groups, p0):
+    """Each item's group rate with that item's own responses removed.
+
+    Self-exclusion is not decoration. Shrinking an item towards a mean that
+    already contains the item pulls it towards itself, which looks like
+    borrowing but is not: a question seen once would be shrunk towards a target
+    it just contributed to, and the estimate would inherit its own noise instead
+    of the group's signal. Measured the same way in
+    `research/prereq_difficulty_reliability.py`, where including the item was
+    what separated a real effect from an inflated one.
+
+    Groups with no other member fall back to `p0`, which is what an ungrouped
+    item would have got.
+    """
+    n = len(correct)
+    g_correct = np.zeros(n, dtype=np.float64)
+    g_total = np.zeros(n, dtype=np.float64)
+    np.add.at(g_correct, groups, correct)
+    np.add.at(g_total, groups, total)
+    others_c = g_correct[groups] - correct
+    others_t = g_total[groups] - total
+    rate = np.where(others_t > 0, others_c / np.maximum(others_t, 1e-12), p0)
+    return rate
+
+
+def parse_concept_lists(value):
+    """`"25,26_31_27,-1"` -> `[[25], [26, 31, 27], []]`.
+
+    `parse_int_list` keeps only the first concept of a multi-concept position,
+    which is what DIMKT's binned difficulty has always used.  A table meant to
+    stand next to `pool_concept_embeddings` cannot do that: the model averages
+    over every concept of the item, so the counted difficulty has to as well, or
+    the two disagree on what "this item's concept" means for exactly the 15-30%
+    of positions the pooling was introduced for.
+    """
+    if value is None or value == "":
+        return []
+    out = []
+    for token in str(value).split(","):
+        if token == "":
+            out.append([])
+            continue
+        ids = []
+        for part in token.split("_"):
+            part = part.strip()
+            if part == "":
+                continue
+            cid = int(float(part))
+            if cid >= 0:
+                ids.append(cid)
+        out.append(ids)
+    return out
+
+
+def _dense_groups(q_group, rng=None):
+    """Concept ids -> dense group indices in `[0, len(q_group))`.
+
+    An item with no resolved concept becomes its own singleton, so it shrinks
+    towards the global rate exactly as it did before grouping existed.
+
+    With `rng`, members are reshuffled between groups while the multiset of
+    group *sizes* is preserved. That is the control: it holds group size,
+    number of groups and the leave-one-out arithmetic fixed and varies only
+    *which items sit together*, so a gain that survives it is a gain from the
+    concept partition rather than from averaging over a bag of that size.
+    """
+    dense = np.arange(len(q_group), dtype=np.int64)
+    buckets = defaultdict(list)
+    for item, cid in enumerate(q_group):
+        if cid >= 0:
+            buckets[int(cid)].append(item)
+    members = [m for v in buckets.values() for m in v]
+    sizes = [len(v) for v in buckets.values()]
+    if rng is not None:
+        members = list(members)
+        rng.shuffle(members)
+    cursor = 0
+    for gid, size in enumerate(sizes):
+        for item in members[cursor:cursor + size]:
+            dense[item] = gid
+        cursor += size
+    return dense
+
+
+def compute_difficulty_logodds_tables(dpath, train_valid_file, folds=None,
+                                      num_q=None, num_c=None, alpha=10.0,
+                                      grouping=None, group_seed=3407):
+    """Question- and concept-level empirical difficulty, from one pass of the file.
+
+    Returns `{"items": [num_q+1], "concepts": [num_c+1], "base_rate": p0}`, with
+    the requested tables only.  Both are standardised log-odds; see
+    `compute_item_difficulty_logodds` for why they are shrunk, centred on
+    `logit(p0)` and scaled to unit spread.
+
+    One pass because `nullkt` needs both and these files reach 128 MB.
+    """
+    path = os.path.join(dpath, train_valid_file)
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Difficulty source not found: {path}")
+    if num_q is None and num_c is None:
+        raise ValueError("Ask for at least one of num_q or num_c.")
+
+    alpha = float(alpha)
+    if alpha < 0:
+        raise ValueError(f"alpha must be non-negative, got {alpha}.")
+
+    df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    if folds is not None:
+        if "fold" not in df.columns:
+            raise ValueError(
+                f"Difficulty source missing required 'fold' column: {path}"
+            )
+        fold_set = {int(fold) for fold in folds}
+        if not fold_set:
+            raise ValueError("Difficulty folds must not be empty.")
+        df = df[df["fold"].astype(int).isin(fold_set)]
+        if df.empty:
+            raise ValueError(
+                f"No difficulty rows found for folds {sorted(fold_set)}."
+            )
+    if num_q is not None and "questions" not in df.columns:
+        raise ValueError(
+            f"Item difficulty needs question ids; {path} has no 'questions' column."
+        )
+    if num_c is not None and "concepts" not in df.columns:
+        raise ValueError(
+            f"Concept difficulty needs concepts; {path} has no 'concepts' column."
+        )
+
+    q_correct = q_total = c_correct = c_total = None
+    if num_q is not None:
+        num_q = int(num_q)
+        q_correct = np.zeros(num_q + 1, dtype=np.float64)
+        q_total = np.zeros(num_q + 1, dtype=np.float64)
+    if num_c is not None:
+        num_c = int(num_c)
+        c_correct = np.zeros(num_c + 1, dtype=np.float64)
+        c_total = np.zeros(num_c + 1, dtype=np.float64)
+
+    # Which group each question belongs to, for `grouping="concept"`. Taken from
+    # the first concept of the position where the question is first seen: a
+    # question's concept set is fixed in these files, so this is deterministic,
+    # and it gives one group per item, which is what shrinking towards a group
+    # requires. Items whose group never resolves stay in their own singleton
+    # group and therefore fall back to the global rate.
+    want_groups = grouping is not None and num_q is not None
+    q_group = np.full(num_q + 1, -1, dtype=np.int64) if want_groups else None
+    if want_groups and "concepts" not in df.columns:
+        raise ValueError(
+            f"grouping={grouping!r} needs concepts; {path} has no 'concepts' column."
+        )
+
+    questions_col = df["questions"] if num_q is not None else [""] * len(df)
+    concepts_col = (df["concepts"] if (num_c is not None or want_groups)
+                    else [""] * len(df))
+    for questions, concepts, responses in zip(questions_col, concepts_col,
+                                              df["responses"]):
+        response_list = parse_int_list(responses)
+        if num_q is not None:
+            q_list = parse_int_list(questions)
+            for question, response in zip(q_list, response_list):
+                if question < 0 or question >= num_q or response == -1:
+                    continue
+                q_correct[question] += response
+                q_total[question] += 1
+            if want_groups:
+                for question, cids in zip(q_list, parse_concept_lists(concepts)):
+                    if 0 <= question < num_q and cids and q_group[question] < 0:
+                        q_group[question] = cids[0]
+        if num_c is not None:
+            for concept_ids, response in zip(parse_concept_lists(concepts),
+                                             response_list):
+                if response == -1:
+                    continue
+                for concept in concept_ids:
+                    if concept >= num_c:
+                        continue
+                    c_correct[concept] += response
+                    c_total[concept] += 1
+
+    # The base rate comes from question rows when we have them, so that a
+    # multi-concept position is counted once rather than once per concept.
+    if num_q is not None:
+        seen = q_total > 0
+        if not seen.any():
+            raise ValueError(f"No question responses in {path} for folds {folds}.")
+        p0 = float(q_correct[seen].sum() / q_total[seen].sum())
+    else:
+        seen = c_total > 0
+        if not seen.any():
+            raise ValueError(f"No concept responses in {path} for folds {folds}.")
+        p0 = float(c_correct[seen].sum() / c_total[seen].sum())
+
+    out = {"base_rate": p0}
+    if num_q is not None:
+        target = None
+        if want_groups:
+            if grouping == "concept":
+                dense = _dense_groups(q_group)
+            elif grouping == "random":
+                dense = _dense_groups(q_group, random.Random(int(group_seed)))
+            else:
+                raise ValueError(
+                    f"grouping must be None, 'concept' or 'random', got {grouping!r}."
+                )
+            target = _leave_one_out_group_rate(q_correct, q_total, dense, p0)
+            out["group_sizes"] = np.bincount(dense, minlength=len(dense))
+        out["items"] = _standardised_logodds(q_correct, q_total, p0, alpha,
+                                             target=target)
+    if num_c is not None:
+        out["concepts"] = _standardised_logodds(c_correct, c_total, p0, alpha)
+    return out
