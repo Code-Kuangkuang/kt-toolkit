@@ -99,9 +99,29 @@ class DGEKTTrainer(BaseTrainer):
         valid_concept = torch.sigmoid(branch_logits[0][smasks] / temperature)
         valid_transition = torch.sigmoid(branch_logits[1][smasks] / temperature)
         valid_ensemble = torch.sigmoid(branch_logits[2][smasks] / temperature)
-        kd_loss = self.kd_lambda * (
-            torch.abs(valid_ensemble - valid_concept).sum()
-            + torch.abs(valid_ensemble - valid_transition).sum()
+        # `/ num_students` is what keeps kd_lambda meaning what the paper's does.
+        # Upstream's eval.py accumulates the supervised term ACROSS the batch --
+        # `for student in ...: loss = loss + crossEntropy(...)`, three per student
+        # -- while the distillation term is a raw `.sum()`. Both therefore grow
+        # with the batch, so their ratio does not. Here the supervised term is one
+        # mean over every valid position and does not grow with the batch, so
+        # without this division the distillation term is batch_size times
+        # over-weighted. Measured on assist2009 fold 0 at batch 64: first-batch
+        # supervised 2.08 vs distillation 27.93, i.e. 93% of the gradient pushed
+        # the three branches towards agreement instead of towards the labels. The
+        # cheapest way to agree is to emit a constant, and that is what training
+        # did: loss pinned at 3*ln2 = 2.0794 (chance), every head bias at
+        # p = 0.5009, the hypergraph branch dead (0% positive pre-activations, from
+        # 47.5% at init), and the model unable to overfit even a single batch.
+        # Test AUC 0.5856; with this division, 0.7401 and still improving.
+        num_students = max(int(smasks.shape[0]), 1)
+        kd_loss = (
+            self.kd_lambda
+            * (
+                torch.abs(valid_ensemble - valid_concept).sum()
+                + torch.abs(valid_ensemble - valid_transition).sum()
+            )
+            / num_students
         )
         loss = supervised_loss + kd_loss
 
