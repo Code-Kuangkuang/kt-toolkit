@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from core.model_inputs import InputSpec
 from core.registry import MODEL_REGISTRY
 
 
@@ -100,6 +101,23 @@ def get_outputs(self, emb_qc_shift, h, data, add_name="", model_type='question')
 
 @MODEL_REGISTRY.register("qikt")
 class QIKTNet(nn.Module):
+    class Inputs(InputSpec):
+        """Declares what this model needs; it derives nothing from the data.
+
+        Only `requires_question_ids` is set. Everything else stays on the base
+        defaults, which is what this model ran with before this class existed --
+        in particular `needs_num_pid` stays False, because turning it on would
+        pass a `num_pid` this constructor does not take.
+
+        QIKT does refuse a concept-only dataset without it, but at
+        `QIKTTrainer._forward_batch` rather than here, i.e. after the loaders
+        are built. Declaring it moves the same refusal ahead of that work and
+        makes the message identical to the twenty-three models that already
+        declare it.
+        """
+
+        requires_question_ids = True
+
     def __init__(self, num_q, num_c, emb_size, dropout=0.1, emb_type='qid', emb_path="", pretrain_dim=768, device='cpu', mlp_layer_num=1, other_config=None):
         super().__init__()
         if other_config is None:

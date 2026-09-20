@@ -5,6 +5,7 @@ import copy
 import pandas as pd
 from torch.nn import Sequential, ReLU
 
+from core.model_inputs import InputSpec
 from core.registry import MODEL_REGISTRY
 from .multi_concept import pool_concept_embeddings, pool_interaction_embeddings
 
@@ -173,6 +174,23 @@ class Decoder_block(nn.Module):
 
 @MODEL_REGISTRY.register("saint_plus")
 class SAINTp(nn.Module):
+    class Inputs(InputSpec):
+        """Declares what this model needs; it derives nothing from the data.
+
+        Only `requires_question_ids` is set, so every other field keeps the base
+        default this model already ran with.
+
+        Without it, a concept-only dataset reached `forward` and died on
+        `TypeError: unsupported operand type(s) for +: 'NoneType' and 'Tensor'`.
+        The guard below at `in_ex` reads as if it handled that case -- it falls
+        back to `qshft` when `qseqs` is None -- but `qshft` is `shft_qseqs` and
+        is None on exactly the same datasets, so the fallback landed on another
+        None. SAINT+ embeds exercises and genuinely cannot run without question
+        ids, so the fix is to refuse up front rather than to repair `in_ex`.
+        """
+
+        requires_question_ids = True
+
     def __init__(
         self,
         num_q,
