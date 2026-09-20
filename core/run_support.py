@@ -134,11 +134,27 @@ def save_run_config(path, payload):
 
 
 def apply_overrides(train_cfg, model_cfg, overrides):
+    """Apply CLI/programmatic overrides onto the train and model config blocks.
+
+    Unknown keys raise. They used to be dropped without a word, which is worse
+    than useless for an experiment harness: a run that overrode a key missing
+    from these sets executed with the default value while reporting the override
+    in its own log, so the resulting numbers answered a different question than
+    the one asked. That cost a real conclusion here -- a sweep over dgekt's
+    `kd_lambda` silently ran at the default and was read as "kd_lambda has no
+    effect", when it was in fact the one parameter that mattered.
+
+    Adding a key means adding it to `train_keys` or `model_keys` below.
+    """
     train_keys = {"batch_size", "num_epochs", "dataset_mode", "patience"}
     model_keys = {
         "learning_rate",
         "emb_size",
         "dropout",
+        "kd_lambda",
+        "kernel_size1",
+        "kernel_size2",
+        "kd_temperature",
         "d_model",
         "d_ff",
         "num_attn_heads",
@@ -189,6 +205,15 @@ def apply_overrides(train_cfg, model_cfg, overrides):
         "max_concept_fusion_weight",
         "response_function",
     }
+    overrides = overrides or {}
+    unknown = sorted(set(overrides) - train_keys - model_keys)
+    if unknown:
+        raise KeyError(
+            f"apply_overrides got {unknown}, which it does not know how to apply. "
+            f"Add each to train_keys or model_keys in core/run_support.py, or drop "
+            f"it from the caller -- silently ignoring it would let the run report "
+            f"an override it never used."
+        )
     for key in train_keys:
         if overrides.get(key) is not None:
             train_cfg[key] = overrides[key]

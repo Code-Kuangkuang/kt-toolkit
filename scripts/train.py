@@ -344,6 +344,10 @@ def main(
         wandb_cfg = load_cfg(wandb_config)
 
     def _train_one_fold(fold_id: int, save_root: str, cv_run_name: Optional[str] = None):
+        # Every CLI hyperparameter option belongs here. --d-model, --d-ff,
+        # --num-attn-heads and --n-blocks were accepted and then never forwarded,
+        # so a run that passed them trained on the config file's values while its
+        # own command line said otherwise.
         overrides = {
             "batch_size": batch_size,
             "num_epochs": num_epochs,
@@ -351,6 +355,10 @@ def main(
             "emb_size": emb_size,
             "dropout": dropout,
             "patience": patience,
+            "d_model": d_model,
+            "d_ff": d_ff,
+            "num_attn_heads": num_attn_heads,
+            "n_blocks": n_blocks,
         }
         return train_one_fold(
             dataset_name=dataset_name,
