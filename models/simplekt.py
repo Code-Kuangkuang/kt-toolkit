@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 import numpy as np
-from core.model_inputs import InputSpec
+from core.model_inputs import InputSpec, ModelInputs
 from core.registry import MODEL_REGISTRY
 from core.backbone import Embeddings, SeqBatch, infer_valid_mask
 from .multi_concept import pool_concept_embeddings, pool_interaction_embeddings
@@ -18,9 +18,69 @@ class Dim:
 @MODEL_REGISTRY.register("simplekt")
 class SimpleKT(nn.Module):
     class Inputs(InputSpec):
-        """Declares what this model needs; it derives nothing from the data."""
+        """Declares what this model needs.
+
+        Derives nothing under every `emb_type` upstream ships.  The one exception
+        is this repository's `qid_frozen`, which replaces the learned per-item
+        Rasch scalar with the training folds' own difficulty counts; that is a
+        derived feature and says so, so the run stamps
+        `feature_fit_scope: train_folds` and cannot be put in a table beside a
+        run stamped `none`.
+        """
 
         needs_num_pid = True
+
+        @classmethod
+        def prepare(cls, ctx):
+            emb_type = str(ctx.model_cfg.get("emb_type", "qid"))
+            if "frozen" not in emb_type:
+                return ModelInputs()
+
+            from datasets.feature_utils import compute_item_difficulty_logodds
+
+            # What the frozen counts are shrunk *towards*. `qid_frozen` uses the
+            # global rate, which is one number shared by every item and so adds
+            # nothing an item can be told apart by; `_grouped` uses the item's
+            # concept group minus itself; `_grouprand` keeps the group sizes and
+            # reshuffles the members. The last one is the control, and it is the
+            # arm that decides the question: without it, a win for `_grouped`
+            # cannot be separated from "any shrinkage target other than a
+            # constant helps". Compare MHAKT (TOIS 2026), whose RM-HG ablation
+            # isolates exactly this and is never quoted in its own text.
+            grouping = None
+            if "grouprand" in emb_type:
+                grouping = "random"
+            elif "grouped" in emb_type:
+                grouping = "concept"
+
+            alpha = float(ctx.model_cfg.get("frozen_difficulty_alpha", 10.0))
+            group_seed = int(ctx.model_cfg.get("frozen_difficulty_group_seed", 3407))
+            table = compute_item_difficulty_logodds(
+                ctx.dataset_cfg["dpath"],
+                ctx.resolve_file(
+                    ctx.quelevel_key("train_valid_file"), "train_valid_file"
+                ),
+                num_q=int(ctx.dataset_cfg["num_q"]),
+                folds=ctx.train_folds(),
+                alpha=alpha,
+                grouping=grouping,
+                group_seed=group_seed,
+            )
+            extras = {
+                "frozen_difficulty_alpha": alpha,
+                "frozen_difficulty_folds": ctx.train_folds(),
+                "frozen_difficulty_nonzero": int((table != 0).sum()),
+                "frozen_difficulty_grouping": grouping or "global",
+            }
+            if grouping == "random":
+                # A random partition is only reproducible with its seed, and a
+                # control whose result cannot be reproduced is not a control.
+                extras["frozen_difficulty_group_seed"] = group_seed
+            return ModelInputs(
+                model_kwargs={"frozen_item_difficulty": table},
+                run_config_extras=extras,
+                feature_fit_scope="train_folds",
+            )
 
     def __init__(
         self,
@@ -39,6 +99,7 @@ class SimpleKT(nn.Module):
         final_fc_dim2=256,
         separate_qa=False,
         emb_type="qid",
+        frozen_item_difficulty=None,
         **kwargs
     ):
         super().__init__()
@@ -61,9 +122,14 @@ class SimpleKT(nn.Module):
 
         embed_l = emb_size
 
+        # `qid_frozen` is scalar-width too: the whole point is that one number
+        # per item is all the data supports, so it plugs into the same slot the
+        # learned scalar occupies.
+        self.frozen_difficulty = emb_type.find("frozen") != -1
+
         # Problem ID embedding (difficulty)
         if self.num_pid > 0:
-            if emb_type.find("scalar") != -1:
+            if emb_type.find("scalar") != -1 or self.frozen_difficulty:
                 self.difficult_param = nn.Embedding(self.num_pid + 1, 1)
             else:
                 self.difficult_param = nn.Embedding(self.num_pid + 1, embed_l)
@@ -102,6 +168,32 @@ class SimpleKT(nn.Module):
         )
 
         self.reset()
+
+        # After `reset`, which zeroes every `num_pid + 1`-row table and would
+        # otherwise wipe this straight back out.
+        if self.frozen_difficulty:
+            if self.num_pid <= 0:
+                raise ValueError(
+                    "emb_type 'frozen' needs question ids; this dataset gave "
+                    "num_pid=0."
+                )
+            if frozen_item_difficulty is None:
+                raise ValueError(
+                    "emb_type contains 'frozen' but no frozen_item_difficulty "
+                    "was supplied. It comes from SimpleKT.Inputs.prepare, which "
+                    "only runs through the training runner."
+                )
+            table = torch.as_tensor(
+                frozen_item_difficulty, dtype=torch.float32
+            ).reshape(-1, 1)
+            if table.shape[0] != self.num_pid + 1:
+                raise ValueError(
+                    f"frozen_item_difficulty has {table.shape[0]} rows, "
+                    f"expected num_pid + 1 = {self.num_pid + 1}."
+                )
+            with torch.no_grad():
+                self.difficult_param.weight.copy_(table)
+            self.difficult_param.weight.requires_grad_(False)
 
     def reset(self):
         for p in self.parameters():
