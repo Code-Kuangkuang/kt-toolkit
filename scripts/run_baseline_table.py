@@ -66,13 +66,26 @@ def find_result(save_root, dataset, model, fold, seed):
         if not config_path.exists():
             continue
         try:
-            return {
+            found = {
                 "metrics": json.loads(metrics_path.read_text(encoding="utf-8")),
                 "config": json.loads(config_path.read_text(encoding="utf-8")),
                 "dir": str(metrics_path.parent),
             }
         except json.JSONDecodeError:
             continue
+        # How many epochs actually ran, so the aggregate view can say whether the
+        # best-validation epoch was also the last one. When it is, training
+        # stopped while the model was still improving and the row is a lower
+        # bound, not a converged result -- `akt` at lr=1e-5 does this on every
+        # dataset here, and reading it as a converged number understates it.
+        log_path = metrics_path.parent / "metrics.jsonl"
+        try:
+            found["epochs_ran"] = sum(
+                1 for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip()
+            )
+        except OSError:
+            found["epochs_ran"] = None
+        return found
     return None
 
 
@@ -176,7 +189,65 @@ def describe_protocol(key):
     return ", ".join(parts)
 
 
-def summarize(save_root, datasets, models, folds, seed, out_path):
+def mean_sd(values):
+    """Mean and sample sd, or (None, None) if there is nothing to average."""
+    usable = [v for v in values if isinstance(v, (int, float)) and v >= 0]
+    if not usable:
+        return None, None
+    mean = sum(usable) / len(usable)
+    if len(usable) < 2:
+        return mean, None
+    var = sum((v - mean) ** 2 for v in usable) / (len(usable) - 1)
+    return mean, var ** 0.5
+
+
+def aggregate_dataset_block(dataset, subset, models, folds):
+    """One row per model: `mean ± sd` over the folds, 4 dp.
+
+    Three things this carries that a per-fold dump does not:
+
+      * `n`, because a mean over three folds and a mean over five are not the
+        same claim and the fold rows alone do not say which you are reading.
+      * `ep`, the mean best-validation epoch.
+      * a `†` marker when the best-validation epoch was the last epoch run on
+        at least one fold. That fold stopped while still improving, so the row
+        is a lower bound. `akt` at lr=1e-5 trips this everywhere.
+    """
+    by_model = {}
+    for row in subset:
+        by_model.setdefault(row["model"], []).append(row)
+
+    header = ["| model | n | " + " | ".join(c[1] for c in METRIC_COLUMNS) + " | ep |",
+              "|---" * (len(METRIC_COLUMNS) + 3) + "|"]
+    body, capped = [], False
+    for model in sorted(by_model, key=lambda m: models.index(m)):
+        runs = by_model[model]
+        cells = []
+        for field, _ in METRIC_COLUMNS:
+            mean, sd = mean_sd([r["metrics"].get(field) for r in runs])
+            if mean is None:
+                cells.append("—")
+            elif sd is None:
+                cells.append(f"{mean:.4f}")
+            else:
+                cells.append(f"{mean:.4f} ± {sd:.4f}")
+        epochs = [r["metrics"].get("epoch") for r in runs if isinstance(r["metrics"].get("epoch"), int)]
+        ep = f"{sum(epochs) / len(epochs):.0f}" if epochs else "—"
+        mark = ""
+        if any(r["epochs_ran"] is not None and isinstance(r["metrics"].get("epoch"), int)
+               and r["epochs_ran"] - r["metrics"]["epoch"] <= 1 for r in runs):
+            mark, capped = " †", True
+        n = f"{len(runs)}/{len(folds)}" if len(runs) != len(folds) else str(len(runs))
+        body.append(f"| `{model}`{mark} | {n} | " + " | ".join(cells) + f" | {ep} |")
+
+    lines = [f"### {dataset}", ""] + header + body + [""]
+    if capped:
+        lines += ["† 至少有一折的最佳 valid epoch 就是最后一轮："
+                  "训练在模型仍在提升时停止，该行是下界而非收敛值。", ""]
+    return lines
+
+
+def summarize(save_root, datasets, models, folds, seed, out_path, aggregate=False):
     rows, missing, unstamped = [], [], []
     for dataset in datasets:
         for model in models:
@@ -192,6 +263,7 @@ def summarize(save_root, datasets, models, folds, seed, out_path):
                 rows.append({
                     "dataset": dataset, "model": model, "fold": fold,
                     "protocol": key, "metrics": found["metrics"],
+                    "epochs_ran": found.get("epochs_ran"),
                 })
 
     lines = ["# 基线对比表", "",
@@ -220,18 +292,21 @@ def summarize(save_root, datasets, models, folds, seed, out_path):
             subset = [r for r in group if r["dataset"] == dataset]
             if not subset:
                 continue
-            lines += [f"### {dataset}", "",
-                      "| model | " + " | ".join(c[1] for c in METRIC_COLUMNS) + " | epoch |",
-                      "|---" * (len(METRIC_COLUMNS) + 2) + "|"]
-            for row in sorted(subset, key=lambda r: models.index(r["model"])):
-                m = row["metrics"]
-                cells = []
-                for field, _ in METRIC_COLUMNS:
-                    value = m.get(field)
-                    cells.append(f"{value:.5f}" if isinstance(value, (int, float)) and value >= 0 else "—")
-                lines.append(f"| `{row['model']}` | " + " | ".join(cells)
-                             + f" | {m.get('epoch', '—')} |")
-            lines.append("")
+            if aggregate:
+                lines += aggregate_dataset_block(dataset, subset, models, folds)
+            else:
+                lines += [f"### {dataset}", "",
+                          "| model | " + " | ".join(c[1] for c in METRIC_COLUMNS) + " | epoch |",
+                          "|---" * (len(METRIC_COLUMNS) + 2) + "|"]
+                for row in sorted(subset, key=lambda r: models.index(r["model"])):
+                    m = row["metrics"]
+                    cells = []
+                    for field, _ in METRIC_COLUMNS:
+                        value = m.get(field)
+                        cells.append(f"{value:.5f}" if isinstance(value, (int, float)) and value >= 0 else "—")
+                    lines.append(f"| `{row['model']}` | " + " | ".join(cells)
+                                 + f" | {m.get('epoch', '—')} |")
+                lines.append("")
 
     if unstamped:
         lines += ["## 无协议指纹（产于 2026-09-16 修复之前，不可用）", ""]
@@ -264,6 +339,8 @@ def main():
     parser.add_argument("--out", default="experiment/baseline_table.md")
     parser.add_argument("--summarize-only", action="store_true",
                         help="只汇总已有结果，不跑任何训练")
+    parser.add_argument("--aggregate", action="store_true",
+                        help="每个模型输出一行 `均值 ± 标准差`（四位小数）而不是逐折列出")
     parser.add_argument("--rerun", action="store_true",
                         help="忽略已完成的结果，全部重跑")
     parser.add_argument("--dry-run", action="store_true",
@@ -307,7 +384,7 @@ def main():
         print(f"\n每格的用时与退出码：{manifest_path}\n")
 
     return summarize(args.save_root, args.datasets, args.models,
-                     args.folds, args.seed, args.out)
+                     args.folds, args.seed, args.out, aggregate=args.aggregate)
 
 
 if __name__ == "__main__":
