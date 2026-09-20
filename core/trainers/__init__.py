@@ -16,6 +16,7 @@ from .hdkt_trainer import HDKTTrainer  # noqa: F401
 from .deep_irt_trainer import DeepIRTTrainer  # noqa: F401
 from .saint_trainer import SAINTTrainer, SAINTpTrainer  # noqa: F401
 from .simplekt_trainer import SimpleKTTrainer  # noqa: F401
+from .nullkt_trainer import NullKTTrainer  # noqa: F401
 from .ukt_trainer import UKTTrainer  # noqa: F401
 from .keenkt_trainer import KeenKTTrainer  # noqa: F401
 from .dkt_forget_trainer import DKTForgetTrainer  # noqa: F401
@@ -28,6 +29,7 @@ from .robustkt_trainer import RobustKTTrainer  # noqa: F401
 from .mockt_trainer import MoCKTTrainer  # noqa: F401
 from .denoisekt_trainer import DenoiseKTTrainer  # noqa: F401
 from .hcgkt_trainer import HCGKTTrainer  # noqa: F401
+from .fakt_trainer import FAKTTrainer  # noqa: F401
 from .mtkt_trainer import MTKTTrainer  # noqa: F401
 from .rekt_trainer import ReKTTrainer  # noqa: F401
 from .hqaf_trainer import HQAFTrainer  # noqa: F401

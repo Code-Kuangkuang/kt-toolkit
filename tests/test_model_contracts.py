@@ -110,8 +110,17 @@ KNOWN_ALIGNMENT_VIOLATIONS = {}
 # covered by a training run.
 FITS_FROM_REAL_DATA = {
     "dimkt", "hqaf", "lpkt", "hdkt", "dkt_forget", "dgekt", "gkt", "dkt_pebg",
-    "denoisekt", "hcgkt", "mtkt",
+    "denoisekt", "hcgkt", "mtkt", "fakt", "nullkt",
 }
+
+
+# Models whose configured emb_type cannot be built in this harness, and the
+# nearest variant that can. FA-KT's configured "qidband" turns on the mixture,
+# whose expert dict always includes MambaExpert and so needs mamba_ssm -- which
+# does not build on Windows. "qidbandnomoe" keeps the three-band frequency layer
+# and the attention path, so everything this harness checks is still exercised;
+# the learned router is covered by a training run where mamba_ssm is installed.
+CONTRACT_EMB_TYPE = {"fakt": "qidbandnomoe"}
 
 
 def _synthetic_concept_map():
@@ -147,6 +156,8 @@ COMPUTED_CONSTRUCTOR_ARGS = {
     "hqaf": {"num_type": 16},
     # MTKT indexes the same three gap tables as dkt_forget.
     "mtkt": {"num_rgap": 8, "num_sgap": 8, "num_pcount": 8, "num_pid": NUM_Q},
+    # FA-KT indexes the same three gap tables.
+    "fakt": {"num_rgap": 8, "num_sgap": 8, "num_pcount": 8, "num_pid": NUM_Q},
     "denoisekt": {"matrix": _synthetic_question_graph()},
     "hcgkt": {
         "matrix": _synthetic_question_graph(),
@@ -155,6 +166,14 @@ COMPUTED_CONSTRUCTOR_ARGS = {
         # since SFM_CL projects it through a Linear.
         "concept_embedding": torch.randn(NUM_C, 32),
         "num_pid": NUM_Q,
+    },
+    # Stands in for the counted difficulty tables. Only the shapes and the
+    # (0, 1) base rate matter here; whether the counting itself is right is
+    # pinned by tests/test_nullkt_is_order_invariant.py and by a training run.
+    "nullkt": {
+        "item_difficulty": torch.randn(NUM_Q + 1),
+        "concept_difficulty": torch.randn(NUM_C + 1),
+        "base_rate": 0.6,
     },
 }
 
@@ -301,7 +320,9 @@ def make_model_and_trainer(model_name, dataset_mode, device=DEVICE):
         model_name,
         num_c=NUM_C,
         num_q=NUM_Q,
-        emb_type=KT_CONFIG.get(model_name, {}).get("emb_type", "qid"),
+        emb_type=CONTRACT_EMB_TYPE.get(
+            model_name, KT_CONFIG.get(model_name, {}).get("emb_type", "qid")
+        ),
         seq_len=SEQ_LEN,
         device=device,
         dpath="",
