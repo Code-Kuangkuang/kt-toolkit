@@ -39,6 +39,7 @@ __pycache__
 .webui/
 .cache/
 logs/
+research/
 
 # HCGKT's concept-text BGE vectors: 3.1 MB of the paper authors' data, obtained
 # from their Google Drive (see models/kc_graph_utils.py). Not redistributed here.
