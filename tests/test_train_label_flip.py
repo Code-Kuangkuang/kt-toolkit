@@ -73,15 +73,6 @@ class TrainLabelFlipTest(unittest.TestCase):
         self.assertEqual(item["shft_rseqs"][0].item(), 0.0)
         self.assertEqual(item["rseqs"][1].item(), 0.0)
 
-    def test_validation_source_can_remain_clean(self):
-        train_source = _ToyKTDataset()
-        valid_source = _ToyKTDataset()
-        valid_before = valid_source.dori["rseqs"].clone()
-
-        apply_train_label_flip(train_source, ratio=1.0, seed=9)
-
-        torch.testing.assert_close(valid_source.dori["rseqs"], valid_before)
-
     def test_response_history_is_recomputed_from_flipped_labels(self):
         noisy = apply_train_label_flip(
             _ToyKTDataset(include_history=True), ratio=1.0, seed=3

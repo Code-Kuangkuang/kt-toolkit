@@ -107,4 +107,6 @@ def _align_shifted_preds(preds, target):
 def _masked_bce(preds, target, mask):
     y = torch.masked_select(preds.double(), mask)
     t = torch.masked_select(target.double(), mask)
+    if y.numel() == 0:
+        return preds.sum() * 0.0
     return binary_cross_entropy(y, t)

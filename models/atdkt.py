@@ -1,3 +1,10 @@
+"""ATDKT adapted from pykt-team/pykt-toolkit (audited 2026-10-03).
+
+Local adaptations pool multi-concept interactions and score concept sets with
+multi-label BCE. Empty concept/history supervision returns differentiable zero,
+so short or unscored sequences do not produce NaN auxiliary losses.
+"""
+
 import torch
 
 from torch import nn
@@ -27,6 +34,7 @@ class ATDKT(Module):
             inputs = super().prepare(ctx)
             emb_type = str(ctx.model_cfg.get("emb_type", ""))
             inputs.dataset_kwargs["include_history"] = "his" in emb_type
+            inputs.run_config_extras["model_correctness_revision"] = "2026-10-03"
             return inputs
 
     def __init__(self, num_q, num_c, seq_len, emb_size, dropout=0.1, emb_type='qid', 
@@ -91,6 +99,44 @@ class ATDKT(Module):
                     nn.Linear(self.hidden_size//2, 1))
                 self.hisloss = nn.MSELoss()
 
+    def _concept_loss(self, logits, target):
+        """ATDKT's `predcurc` auxiliary target, for one or many concepts per item.
+
+        Upstream assumes exactly one concept per position, because pykt runs this
+        model over KC-expanded sequences. Under `all_in_one` a position carries
+        up to `max_concepts` of them padded with -1, so the target arrives as
+        `[N, K]` and `CrossEntropyLoss` rejects it -- which is why enabling
+        `predcurc` surfaced a failure that the configured `emb_type="qid"` had
+        been hiding.
+
+        `K == 1` keeps upstream's cross-entropy exactly, so assist2017,
+        assist2012 and statics2011 are bit-identical to pykt's formulation.
+
+        `K > 1` scores every concept of the item instead of picking one. This
+        follows the choice already made for the embedding path a few lines
+        below: `pool_concept_embeddings` averages over all of an item's
+        concepts, so a target that kept only the first would be asking the
+        classifier to predict something the encoder was never shown alone.
+        Truncating to the first concept is the other defensible option -- it is
+        what gkt and rekt do -- but it costs a `concepts_visible: first_of_K`
+        stamp, which would move this model into its own protocol group and out
+        of the comparison table.
+        """
+        if logits.size(0) == 0:
+            return logits.sum() * 0.0
+        if target.dim() == 1:
+            return self.closs(logits, target)
+        if target.size(-1) == 1:
+            return self.closs(logits, target.squeeze(-1))
+        valid = target >= 0
+        multi_hot = torch.zeros_like(logits)
+        rows = torch.arange(target.size(0), device=target.device)
+        rows = rows.unsqueeze(-1).expand_as(target)[valid]
+        multi_hot[rows, target[valid]] = 1.0
+        return torch.nn.functional.binary_cross_entropy_with_logits(
+            logits, multi_hot
+        )
+
     def predcurc(self, dcur, q, c, r, xemb, train):
         emb_type = self.emb_type
         y2, y3 = 0, 0
@@ -120,7 +166,7 @@ class ATDKT(Module):
             start = 0
             cpreds = self.qclasifier(qh[:,start:,:])
             flag = sm[:,start:]==1
-            y2 = self.closs(cpreds[flag], c[:,start:][flag])
+            y2 = self._concept_loss(cpreds[flag], c[:,start:][flag])
 
         # predict response
         xemb = xemb + qh + cemb
@@ -137,7 +183,8 @@ class ATDKT(Module):
             rsm = sm[:,start:]
             rflag = rsm==1
             rtrues = dcur["historycorrs"][:,start:]
-            y3 = self.hisloss(rpreds[:,start:][rflag], rtrues[rflag])
+            y3 = (self.hisloss(rpreds[:,start:][rflag], rtrues[rflag])
+                  if rflag.any() else rpreds.sum() * 0.0)
 
         # predict response
         h = self.dropout_layer(h)
@@ -181,7 +228,8 @@ class ATDKT(Module):
                 rsm = sm[:,start:]
                 rflag = rsm==1
                 rtrues = dcur["historycorrs"][:,start:]
-                y2 = self.hisloss(rpreds[rflag], rtrues[rflag])
+                y2 = (self.hisloss(rpreds[rflag], rtrues[rflag])
+                      if rflag.any() else rpreds.sum() * 0.0)
 
             h = self.dropout_layer(h)
             y = self.out_layer(h)

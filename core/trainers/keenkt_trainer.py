@@ -28,10 +28,7 @@ def _full_sequence(
         return None
     sequence = sequence.to(device=device, dtype=dtype)
     shifted = shifted.to(device=device, dtype=dtype)
-    if sequence.dim() == 3:
-        sequence = sequence[:, :, 0]
-    if shifted.dim() == 3:
-        shifted = shifted[:, :, 0]
+    # Concepts retain [B,T,K]; the model pools valid slots into [B,T,D].
     return torch.cat((sequence[:, :1], shifted), dim=1)
 
 

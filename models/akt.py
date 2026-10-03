@@ -331,6 +331,31 @@ class MultiHeadAttention(nn.Module):
             torch.nn.init.xavier_uniform_(self.gammas)
             self._reset_parameters()
 
+        if emb_type.find("alibi") != -1:
+            # qid_alibi arm: fixed ALiBi bias (Press et al. 2022), built exactly
+            # like models/extrakt.py's buffer. It replaces the gamma decay in
+            # attention(); gammas stays as a dead parameter, mirroring extrakt's
+            # qid branch where the decay code exists but never runs.
+            def get_slopes(n):
+                def get_slopes_power_of_2(n):
+                    start = (2**(-2**-(math.log2(n)-3)))
+                    ratio = start
+                    return [start*ratio**i for i in range(n)]
+
+                if math.log2(n).is_integer():
+                    return get_slopes_power_of_2(n)
+                closest_power_of_2 = 2**math.floor(math.log2(n))
+                return get_slopes_power_of_2(closest_power_of_2) + get_slopes(2*closest_power_of_2)[0::2][:n-closest_power_of_2]
+
+            maxpos = 1000
+            context_position = torch.arange(maxpos)[:, None]
+            memory_position = torch.arange(maxpos)[None, :]
+            relative_position = torch.abs(memory_position - context_position)
+            relative_position = relative_position.unsqueeze(0).expand(n_heads, -1, -1)
+            slopes = torch.Tensor(get_slopes(n_heads))*-1
+            alibi = slopes.unsqueeze(1).unsqueeze(1) * relative_position
+            self.register_buffer("alibi", alibi.view(1, n_heads, maxpos, maxpos), persistent=False)
+
 
     def _reset_parameters(self):
         xavier_uniform_(self.k_linear.weight)
@@ -380,7 +405,8 @@ class MultiHeadAttention(nn.Module):
             if self.emb_type.find("pdiff") == -1:
                 pdiff = None
             scores = attention(q, k, v, self.d_k,
-                            mask, self.dropout, zero_pad, gammas, pdiff)
+                            mask, self.dropout, zero_pad, gammas, pdiff,
+                            alibi=getattr(self, "alibi", None))
 
             # concatenate heads and put through final linear layer
             concat = scores.transpose(1, 2).contiguous()\
@@ -398,7 +424,7 @@ class MultiHeadAttention(nn.Module):
         return scores
 
 
-def attention(q, k, v, d_k, mask, dropout, zero_pad, gamma=None, pdiff=None):
+def attention(q, k, v, d_k, mask, dropout, zero_pad, gamma=None, pdiff=None, alibi=None):
     """
     This is called by Multi-head atention object to find the values.
     """
@@ -406,6 +432,12 @@ def attention(q, k, v, d_k, mask, dropout, zero_pad, gamma=None, pdiff=None):
     scores = torch.matmul(q, k.transpose(-2, -1)) / \
         math.sqrt(d_k)  # BS, 8, seqlen, seqlen
     bs, head, seqlen = scores.size(0), scores.size(1), scores.size(2)
+
+    if alibi is not None:
+        # qid_alibi arm: the static per-head linear distance bias replaces the
+        # monotonic decay entirely (mirrors models/extrakt.py's qid branch).
+        scores = scores + alibi[:, :, :seqlen, :seqlen]
+        return _attn_output(scores, mask, dropout, zero_pad, bs, head, seqlen, v)
 
     x1 = torch.arange(seqlen, device=scores.device).expand(seqlen, -1)
     x2 = x1.transpose(0, 1).contiguous()
@@ -438,19 +470,18 @@ def attention(q, k, v, d_k, mask, dropout, zero_pad, gamma=None, pdiff=None):
             (dist_scores*gamma*diff).exp(), min=1e-5), max=1e5) # 对应论文公式1中的新增部分
     scores = scores * total_effect
 
+    return _attn_output(scores, mask, dropout, zero_pad, bs, head, seqlen, v)
+
+
+def _attn_output(scores, mask, dropout, zero_pad, bs, head, seqlen, v):
+    """Shared attention tail: mask, softmax, zero-pad row 0, dropout, weigh V."""
     scores.masked_fill_(mask == 0, -1e32)
     scores = F.softmax(scores, dim=-1)  # BS,8,seqlen,seqlen
-    # print(f"before zero pad scores: {scores.shape}")
-    # print(zero_pad)
     if zero_pad:
         pad_zero = scores.new_zeros(bs, head, 1, seqlen)
         scores = torch.cat([pad_zero, scores[:, :, 1:, :]], dim=2) # 第一行score置0
-    # print(f"after zero pad scores: {scores}")
     scores = dropout(scores)
-    output = torch.matmul(scores, v)
-    # import sys
-    # sys.exit()
-    return output
+    return torch.matmul(scores, v)
 
 
 class LearnablePositionalEmbedding(nn.Module):

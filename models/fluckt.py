@@ -94,13 +94,37 @@ class CausalConv1d(nn.Module):
 
 
 class FrequencyLayer(nn.Module):
-    def __init__(self, dropout, hidden_size, kernel_size):
+    """`mode` selects an ablation arm; "full" is upstream FlucKT.
+
+    Trained checkpoints (assist2012, five folds) show the full layer is not a
+    temporal smoother: diagonal kernels sum to ~0, 90% of kernel energy is
+    cross-channel, and the learned gate amplifies high frequency (beta2 > 1)
+    on a third of the channels while attenuating it on ~44%. The arms below
+    exist to attribute FlucKT's margin over AKT:
+
+      * "beta1": sqrt_beta pinned to exactly 1.  low + 1*high == input, the
+        conv cancels algebraically and its gradients are exactly zero, so what
+        remains is dropout + residual + LayerNorm around the identity.  This
+        arm measures the wrapper alone.
+      * "frozenrand": the conv stays at its random initialisation and only the
+        gate trains.  If this arm matches full FlucKT, the learned kernels
+        carry nothing an untrained random projection doesn't.
+    """
+
+    def __init__(self, dropout, hidden_size, kernel_size, mode="full"):
         super(FrequencyLayer, self).__init__()
         self.out_dropout = nn.Dropout(dropout)
         self.LayerNorm = LayerNorm(hidden_size, eps=1e-12)
         self.causal_conv = CausalConv1d(hidden_size, hidden_size, kernel_size)
         self.c = kernel_size // 2 + 1
-        self.sqrt_beta = nn.Parameter(torch.randn(1, 1, hidden_size))
+        self.mode = mode
+        if mode == "beta1":
+            # A buffer, not a parameter: pinned at exactly 1, no gradient.
+            self.register_buffer("sqrt_beta", torch.ones(1, 1, hidden_size))
+        else:
+            self.sqrt_beta = nn.Parameter(torch.randn(1, 1, hidden_size))
+            if mode == "frozenrand":
+                self.causal_conv.requires_grad_(False)
 
     def forward(self, input_tensor):
         # [batch, seq_len, hidden]
@@ -273,7 +297,17 @@ class Framework(nn.Module):
         #     # print(f"{d_state},{d_conv},{expand}")
 
         if self.emb_type.find("conv") != -1:
-            self.filter_layer = FrequencyLayer(dropout,d_model,kernel_size)
+            # Ablation arms are selected by emb_type suffix: "qid_conv_beta1"
+            # (wrapper only) and "qid_conv_frozenrand" (random frozen conv,
+            # gate trains). Both contain "conv" so the filter gate above and
+            # the adapter's conv-less refusal both see them as FlucKT variants.
+            if "beta1" in emb_type:
+                mode = "beta1"
+            elif "frozenrand" in emb_type:
+                mode = "frozenrand"
+            else:
+                mode = "full"
+            self.filter_layer = FrequencyLayer(dropout,d_model,kernel_size, mode=mode)
             # print(f"kernel_size:{kernel_size}, now you are in conv.")
 
 
@@ -437,14 +471,25 @@ class MultiHeadAttention(nn.Module):
         maxpos = 1000
         attn_heads = n_heads  
         
-        context_position = torch.arange(maxpos)[:, None].cuda()
-        memory_position = torch.arange(maxpos)[None, :].cuda()
-        relative_position = memory_position - context_position 
+        # Upstream hardcoded `.cuda()` on these three and left them as plain
+        # attributes, which does three things: the model cannot be built on CPU,
+        # it pins to device 0 whatever --gpu says, and `model.to(device)` cannot
+        # move them because plain attributes are not part of the module state.
+        # It is not free either -- `alibi` is [1, n_heads, 1000, 1000], so one
+        # construction reserved ~183 MB of VRAM before training started, even
+        # for a run that asked for CPU. Built on CPU and registered as buffers.
+        # tests/test_model_contracts.py did not catch it: it reads
+        # named_parameters()/named_buffers(), and an unregistered attribute
+        # appears in neither.
+        context_position = torch.arange(maxpos)[:, None]
+        memory_position = torch.arange(maxpos)[None, :]
+        relative_position = memory_position - context_position
         relative_position = torch.abs(relative_position).unsqueeze(0).expand(attn_heads, -1,-1)
 
-        self.slopes = torch.Tensor(get_slopes(attn_heads)).cuda()*-1
-        self.alibi = self.slopes.unsqueeze(1).unsqueeze(1) * relative_position
-        self.alibi = self.alibi.view(1, attn_heads, maxpos, maxpos)
+        slopes = torch.Tensor(get_slopes(attn_heads))*-1
+        alibi = slopes.unsqueeze(1).unsqueeze(1) * relative_position
+        self.register_buffer("slopes", slopes, persistent=False)
+        self.register_buffer("alibi", alibi.view(1, attn_heads, maxpos, maxpos), persistent=False)
 
 
     def _reset_parameters(self):

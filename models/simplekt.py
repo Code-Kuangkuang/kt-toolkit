@@ -15,6 +15,218 @@ class Dim:
     feature = 2
 
 
+class LearnedShrinkageDifficulty(nn.Module):
+    """Frozen difficulty whose shrinkage *strength* is fitted, not fixed at alpha.
+
+    `compute_item_difficulty_logodds` shrinks an item's training-fold rate
+    towards a target with weight `alpha / (n_i + alpha)` at a fixed alpha=10.
+    That weight is a one-parameter member of a two-parameter family, because
+
+        alpha / (n + alpha)  ==  sigmoid(log alpha - log n)
+
+    exactly. This module learns `(slope, level)` in
+
+        w_i = sigmoid(level - slope * log n_i)
+
+    so `slope=1, level=log 10` -- the initialisation -- reproduces the fixed arm
+    element for element at step 0. The fixed arm is therefore nested inside this
+    one, which is what makes the comparison a test rather than two unrelated
+    models.
+
+    Why this is worth fitting at all: `alpha` is a count, so the same alpha is a
+    different amount of shrinkage at different observations-per-item. At
+    alpha=10 the weight is 75% on algebra2005 (3.3 responses per item) and 4.8%
+    on assist2017 (196). `level` lets the data set that, and `slope` lets it set
+    how fast shrinkage should fall off as evidence accumulates -- the closed
+    form asserts a rate of exactly 1 in log n, which nothing has checked.
+
+    Two parameters total, shared by every item. That matters for the premise
+    this whole line rests on: a per-item parameter could recover the per-item
+    counts by memorising them, which is the thing `qid_frozen` exists to rule
+    out, while two numbers cannot. What is still frozen is each item's *rate*
+    and its *target*; only the mixing weight moves.
+
+    `slope` is left unconstrained. A fitted `slope <= 0` would mean shrinking
+    harder as evidence accumulates, which is not a hypothesis anyone holds; it
+    is reported rather than prevented, because seeing it would say the setup is
+    broken and clamping it would hide that.
+
+    Shape and call signature match the `nn.Embedding(num_pid + 1, 1)` it
+    replaces, so the two `self.difficult_param(pid_data)` call sites are
+    unchanged.
+    """
+
+    def __init__(self, rate, target, count, base_rate, init_alpha=10.0,
+                 zero_unseen=True):
+        super().__init__()
+        self.zero_unseen = bool(zero_unseen)
+        rate = torch.as_tensor(rate, dtype=torch.float32)
+        target = torch.as_tensor(target, dtype=torch.float32)
+        count = torch.as_tensor(count, dtype=torch.float32)
+        self.register_buffer("rate", rate)
+        self.register_buffer("target", target)
+        self.register_buffer("seen", count > 0)
+        # Clamped so an unseen item's log is finite; its weight is forced to 1
+        # below, so the value never reaches the output.
+        self.register_buffer("log_count", torch.log(count.clamp(min=1.0)))
+
+        base_rate = float(min(max(base_rate, 1e-6), 1 - 1e-6))
+        self.register_buffer(
+            "base_logit", torch.tensor(math.log(base_rate / (1.0 - base_rate)))
+        )
+        # Shape [1] rather than scalar: SimpleKT.reset() calls p.size(0) on every
+        # parameter, which raises on a 0-dim tensor.
+        self.slope = nn.Parameter(torch.tensor([1.0]))
+        self.level = nn.Parameter(torch.tensor([math.log(float(init_alpha))]))
+
+    def weights(self):
+        """`[num_q+1]` shrinkage weight per item, 1 where the item is unseen."""
+        w = torch.sigmoid(self.level - self.slope * self.log_count)
+        return torch.where(self.seen, w, torch.ones_like(w))
+
+    def table(self):
+        """`[num_q+1, 1]` standardised log-odds, differentiable in the weights.
+
+        Mirrors `_standardised_logodds` step for step, including `unbiased=False`
+        on the spread: numpy's `.std()` is ddof=0, and a ddof=1 spread here would
+        make the two arms differ at initialisation by a factor no hypothesis
+        asked for.
+        """
+        w = self.weights()
+        smoothed = ((1.0 - w) * self.rate + w * self.target).clamp(1e-6, 1 - 1e-6)
+        logodds = torch.log(smoothed / (1.0 - smoothed)) - self.base_logit
+        seen_values = logodds[self.seen]
+        scale = seen_values.std(unbiased=False)
+        logodds = torch.where(scale > 0, logodds / scale.clamp(min=1e-12), logodds)
+        # `_standardised_logodds` ends by zeroing unseen rows, and the two arms
+        # have to agree on it. `_cold` turns that off: under a grouped target an
+        # item with no training-fold responses then keeps its group's rate,
+        # which is the case grouping exists for.
+        if self.zero_unseen:
+            logodds = torch.where(self.seen, logodds, torch.zeros_like(logodds))
+        padding = torch.zeros_like(logodds)
+        padding[:-1] = logodds[:-1]
+        return padding.unsqueeze(-1)
+
+    def forward(self, pid_data):
+        return F.embedding(pid_data, self.table())
+
+
+class ShrunkItemEmbedding(nn.Module):
+    """A full-width item embedding shrunk towards its concepts, weight fitted.
+
+    `qid_frozen*` established that shrinking an item's difficulty towards its
+    concept group beats both a global target (+0.0027) and a size-matched random
+    partition (+0.0023, t=5.72), and that the gain concentrates where shrinkage
+    theory says it should: +0.0143 on items seen 1-4 times against +0.0012 on
+    items seen 20+ times. All of that was measured on ONE number per item,
+    because that is what `qid_frozen` freezes.
+
+    CGMKT shrinks 256 numbers per item instead -- its question table is
+    initialised from the mean concept vector and pulled back towards it by a
+    graph hop every forward pass -- and scores 0.7942 against simpleKT's 0.7858
+    with 12% FEWER parameters. That gap is the one structural difference between
+    the two lines that has never been tested here, so this arm tests it:
+
+        table = (1 - w_i) * own_i + w_i * target_i
+
+        own_i     free [num_q+1, d], what `qid` already learns
+        target_i  masked mean of this question's concept embeddings
+        w_i       sigmoid(level - slope * log n_i), the same two-parameter
+                  family models/simplekt.py::LearnedShrinkageDifficulty uses,
+                  initialised at slope=1, level=log alpha so that it starts as
+                  the closed form alpha/(n_i+alpha)
+
+    Everything else stays as `qid`: the table still enters through
+    `pid_embed * q_embed_diff`, so a difference against `qid` is the shrinkage
+    and nothing else. An item with no training-fold responses gets `w=1` and so
+    sits entirely on its concepts, which is the vector analogue of the `_cold`
+    arm that was worth +0.064 on exactly those items.
+
+    `use_text` adds the BGE concept vectors to the concept table. CGMKT's
+    largest measured component was those vectors (+0.0025 overall, +0.0178 on
+    unseen items), but it reaches them through the same low-data channel this
+    shrinkage already uses, so the two may simply overlap. That is what the
+    `_text` variant is for; it is not assumed to help.
+    """
+
+    def __init__(self, num_q, d, concept_map, item_count, text_embedding=None,
+                 init_alpha=10.0):
+        super().__init__()
+        concept_map = torch.as_tensor(concept_map, dtype=torch.long)
+        item_count = torch.as_tensor(item_count, dtype=torch.float32)
+        num_c = int(concept_map.max().item()) + 1
+
+        self.own = nn.Parameter(torch.empty(num_q + 1, d))
+        nn.init.xavier_uniform_(self.own)
+        self.concept = nn.Parameter(torch.empty(num_c, d))
+        nn.init.xavier_uniform_(self.concept)
+
+        self.use_text = text_embedding is not None
+        if self.use_text:
+            text = torch.as_tensor(text_embedding, dtype=torch.float32)
+            if text.shape[0] != num_c:
+                raise ValueError(
+                    f"text_embedding has {text.shape[0]} concept rows against "
+                    f"{num_c} concepts in the question-concept map."
+                )
+            # INITIALISE the concept table from the text, as CGMKT does, rather
+            # than adding a projected copy to it every forward pass.
+            #
+            # The additive form was tried first and is broken: `self.text` is a
+            # buffer and only the projection is learnable, so the target carried
+            # whatever scale a fresh Linear happened to give it. Measured on
+            # assist2009: projected-text norm 28.48 against a concept table of
+            # 1.23, i.e. the free table contributed 4% of the target and five
+            # epochs did not pull it back. Items with few responses sit almost
+            # entirely on that target (w=0.89 at n=1), so they took the full hit
+            # -- AUC on items seen 1-4 times fell 0.0249 (t=-9.08) while items
+            # seen 20+ times, where w is near 0, were unaffected. That sign
+            # pattern is the scale bug, not a finding about text.
+            #
+            # As an initialisation the scale is fixed once, matched to what
+            # xavier would have produced, and training can move it.
+            with torch.no_grad():
+                projected = nn.Linear(text.shape[1], d)(text)
+                projected = projected / projected.norm(dim=1, keepdim=True).clamp(min=1e-8)
+                projected = projected * self.concept.norm(dim=1).mean()
+                self.concept.copy_(projected)
+
+        # `concept_map` is [num_q, max_concepts] with -1 padding and covers real
+        # questions only; the padding row is appended so the table is
+        # [num_q+1, ...] like every other item table here.
+        padded = torch.full((num_q + 1, concept_map.shape[1]), -1, dtype=torch.long)
+        padded[: concept_map.shape[0]] = concept_map
+        self.register_buffer("qmap", padded)
+        self.register_buffer("has_concept", (padded >= 0).any(dim=1))
+        self.register_buffer("seen", item_count > 0)
+        self.register_buffer("log_count", torch.log(item_count.clamp(min=1.0)))
+
+        self.slope = nn.Parameter(torch.tensor([1.0]))
+        self.level = nn.Parameter(torch.tensor([math.log(float(init_alpha))]))
+
+    def table(self):
+        # Text, when used, is baked into `self.concept` at construction; there
+        # is no separate additive path. See __init__ for why.
+        concept = self.concept
+
+        mask = self.qmap >= 0                                     # [num_q+1, K]
+        pooled = F.embedding(self.qmap.clamp(min=0), concept)     # [num_q+1, K, d]
+        pooled = pooled * mask.unsqueeze(-1).to(pooled.dtype)
+        counts = mask.sum(1, keepdim=True).clamp(min=1).to(pooled.dtype)
+        target = pooled.sum(1) / counts                           # [num_q+1, d]
+
+        w = torch.sigmoid(self.level - self.slope * self.log_count)
+        # No responses of its own -> sit entirely on the concepts. A question
+        # with no concepts either has nothing to borrow, so it keeps `own`.
+        w = torch.where(self.seen, w, torch.ones_like(w))
+        w = torch.where(self.has_concept, w, torch.zeros_like(w))
+        return (1.0 - w).unsqueeze(-1) * self.own + w.unsqueeze(-1) * target
+
+    def forward(self, pid_data):
+        return F.embedding(pid_data, self.table())
+
+
 @MODEL_REGISTRY.register("simplekt")
 class SimpleKT(nn.Module):
     class Inputs(InputSpec):
@@ -33,6 +245,63 @@ class SimpleKT(nn.Module):
         @classmethod
         def prepare(cls, ctx):
             emb_type = str(ctx.model_cfg.get("emb_type", "qid"))
+
+            # `qid_shrunkvec[_text]`: the full-width analogue of the frozen
+            # scalar arms. Needs the same counts they do, plus the
+            # question-concept map that says what each item shrinks towards.
+            if "shrunkvec" in emb_type:
+                import json
+                import os
+
+                import numpy as _np
+
+                from datasets.feature_utils import (
+                    compute_item_difficulty_ingredients,
+                )
+                from models.kc_graph_utils import build_question_concept_map
+
+                dpath = ctx.dataset_cfg["dpath"]
+                num_q = int(ctx.dataset_cfg["num_q"])
+                num_c = int(ctx.dataset_cfg["num_c"])
+                with open(os.path.join(dpath, "keyid2idx.json"), encoding="utf-8") as fh:
+                    max_concepts = int(json.load(fh)["max_concepts"])
+                parts = compute_item_difficulty_ingredients(
+                    dpath,
+                    ctx.resolve_file(
+                        ctx.quelevel_key("train_valid_file"), "train_valid_file"
+                    ),
+                    num_q=num_q,
+                    folds=ctx.train_folds(),
+                )
+                kwargs = {
+                    "item_count": parts["count"],
+                    "concept_map": build_question_concept_map(dpath, num_q, max_concepts),
+                }
+                extras = {
+                    "frozen_difficulty_alpha": float(
+                        ctx.model_cfg.get("frozen_difficulty_alpha", 10.0)
+                    ),
+                    "frozen_difficulty_folds": ctx.train_folds(),
+                    "frozen_difficulty_weight": "learned",
+                    "item_shrinkage": "vector",
+                    "item_shrinkage_text": "text" in emb_type,
+                    "frozen_difficulty_seen_items": int((parts["count"] > 0).sum()),
+                }
+                if "text" in emb_type:
+                    from models.kc_graph_utils import load_kc_text_embeddings
+
+                    kwargs["text_embedding"] = load_kc_text_embeddings(
+                        ctx.dataset_name, num_c, ctx.root_dir
+                    )
+                return ModelInputs(
+                    model_kwargs=kwargs,
+                    run_config_extras=extras,
+                    # The counts are fitted on the training folds; the
+                    # question-concept map is static metadata the loaders
+                    # already hand every model through `cseqs`.
+                    feature_fit_scope="train_folds",
+                )
+
             if "frozen" not in emb_type:
                 return ModelInputs()
 
@@ -55,6 +324,85 @@ class SimpleKT(nn.Module):
 
             alpha = float(ctx.model_cfg.get("frozen_difficulty_alpha", 10.0))
             group_seed = int(ctx.model_cfg.get("frozen_difficulty_group_seed", 3407))
+
+            # `_cold` reads group membership from the Q-matrix instead of from
+            # the training rows, and stops resetting unseen items to 0. Without
+            # it, an item no training row touches is a singleton group shrunk to
+            # the global rate and then zeroed anyway -- so `_grouped` and
+            # `_grouprand` are bit-identical on those items, which on assist2009
+            # is 625 of 17,738. Those are the items with nothing of their own to
+            # go on, i.e. the ones the grouping hypothesis is about.
+            # `_alias` collapses concept ids that name the same skill before
+            # groups are formed. Concept ids are not one-to-one with skills: on
+            # assist2009 twenty of the 123 ids share a name with another id, so
+            # grouping by id splits eight skills across twenty groups and two
+            # items testing the same thing shrink towards different targets.
+            # It is the cheap half of the question BGE embeddings answer in
+            # CGMKT -- alias merging needs the names only, not the vectors --
+            # so running it first says how much of that is plain de-duplication.
+            merge_alias = "alias" in emb_type
+            concept_alias = None
+            if merge_alias:
+                if grouping is None:
+                    raise ValueError(
+                        "emb_type contains 'alias' but no grouping; merging "
+                        "concept ids changes nothing when every item shrinks "
+                        "towards the same global rate. Use '_grouped_alias'."
+                    )
+                from models.kc_graph_utils import load_concept_alias_map
+
+                concept_alias = load_concept_alias_map(
+                    ctx.dataset_name, int(ctx.dataset_cfg["num_c"]), ctx.root_dir
+                )
+
+            cold_start = "cold" in emb_type
+            if cold_start and grouping is None:
+                raise ValueError(
+                    "emb_type contains 'cold' but no grouping; shrinking an "
+                    "unseen item towards the global rate and keeping it is the "
+                    "global rate written twice, not a cold-start arm. Use "
+                    "'_grouped_cold' or '_grouprand_cold'."
+                )
+
+            # `_learnw` keeps the same rows, folds and grouping but hands over
+            # the unshrunk parts, so the shrinkage weight can be fitted inside
+            # the model instead of being fixed at `alpha`. `alpha` survives as
+            # the initialisation, which is what makes the fixed arm the t=0
+            # state of this one.
+            if "learnw" in emb_type:
+                from datasets.feature_utils import (
+                    compute_item_difficulty_ingredients,
+                )
+
+                parts = compute_item_difficulty_ingredients(
+                    ctx.dataset_cfg["dpath"],
+                    ctx.resolve_file(
+                        ctx.quelevel_key("train_valid_file"), "train_valid_file"
+                    ),
+                    num_q=int(ctx.dataset_cfg["num_q"]),
+                    folds=ctx.train_folds(),
+                    grouping=grouping,
+                    group_seed=group_seed,
+                    cold_start=cold_start,
+                    concept_alias=concept_alias,
+                )
+                extras = {
+                    "frozen_difficulty_alpha": alpha,  # initialisation only
+                    "frozen_difficulty_folds": ctx.train_folds(),
+                    "frozen_difficulty_grouping": grouping or "global",
+                    "frozen_difficulty_weight": "learned",
+                    "frozen_difficulty_cold_start": cold_start,
+                    "frozen_difficulty_merge_alias": merge_alias,
+                    "frozen_difficulty_seen_items": int((parts["count"] > 0).sum()),
+                }
+                if grouping == "random":
+                    extras["frozen_difficulty_group_seed"] = group_seed
+                return ModelInputs(
+                    model_kwargs={"difficulty_ingredients": parts},
+                    run_config_extras=extras,
+                    feature_fit_scope="train_folds",
+                )
+
             table = compute_item_difficulty_logodds(
                 ctx.dataset_cfg["dpath"],
                 ctx.resolve_file(
@@ -65,12 +413,16 @@ class SimpleKT(nn.Module):
                 alpha=alpha,
                 grouping=grouping,
                 group_seed=group_seed,
+                cold_start=cold_start,
+                concept_alias=concept_alias,
             )
             extras = {
                 "frozen_difficulty_alpha": alpha,
                 "frozen_difficulty_folds": ctx.train_folds(),
                 "frozen_difficulty_nonzero": int((table != 0).sum()),
                 "frozen_difficulty_grouping": grouping or "global",
+                "frozen_difficulty_cold_start": cold_start,
+                "frozen_difficulty_merge_alias": merge_alias,
             }
             if grouping == "random":
                 # A random partition is only reproducible with its seed, and a
@@ -100,6 +452,11 @@ class SimpleKT(nn.Module):
         separate_qa=False,
         emb_type="qid",
         frozen_item_difficulty=None,
+        difficulty_ingredients=None,
+        frozen_difficulty_alpha=10.0,
+        item_count=None,
+        concept_map=None,
+        text_embedding=None,
         **kwargs
     ):
         super().__init__()
@@ -126,10 +483,42 @@ class SimpleKT(nn.Module):
         # per item is all the data supports, so it plugs into the same slot the
         # learned scalar occupies.
         self.frozen_difficulty = emb_type.find("frozen") != -1
+        # `_learnw` keeps everything about the frozen arm except the one number
+        # that says how hard to shrink; see LearnedShrinkageDifficulty.
+        self.learned_shrinkage = emb_type.find("learnw") != -1
+        # Full-width shrinkage keeps `qid`'s multiplicative combination, so it
+        # must NOT take the scalar branch below.
+        self.vector_shrinkage = emb_type.find("shrunkvec") != -1
+        # `_additive` drops the multiplicative Rasch form; see the embedding
+        # stage. Composable with `shrunkvec`, since they change different things.
+        self.additive_item = emb_type.find("additive") != -1
 
         # Problem ID embedding (difficulty)
         if self.num_pid > 0:
-            if emb_type.find("scalar") != -1 or self.frozen_difficulty:
+            if self.additive_item and (
+                emb_type.find("scalar") != -1 or (
+                    self.frozen_difficulty and not self.vector_shrinkage)):
+                raise ValueError(
+                    "emb_type combines 'additive' with a scalar item table. "
+                    "Adding a [.., 1] tensor to a [.., d] embedding broadcasts "
+                    "it into a constant bias on every dimension, which is not "
+                    "the additive item representation this arm is testing. Use "
+                    "'qid_additive' or 'qid_shrunkvec_additive'."
+                )
+            if self.vector_shrinkage:
+                if item_count is None or concept_map is None:
+                    raise ValueError(
+                        "emb_type contains 'shrunkvec' but item_count/concept_map "
+                        "were not supplied. They come from SimpleKT.Inputs.prepare, "
+                        "which only runs through the training runner."
+                    )
+                self.difficult_param = ShrunkItemEmbedding(
+                    num_q=self.num_pid, d=embed_l,
+                    concept_map=concept_map, item_count=item_count,
+                    text_embedding=text_embedding,
+                    init_alpha=frozen_difficulty_alpha,
+                )
+            elif emb_type.find("scalar") != -1 or self.frozen_difficulty:
                 self.difficult_param = nn.Embedding(self.num_pid + 1, 1)
             else:
                 self.difficult_param = nn.Embedding(self.num_pid + 1, embed_l)
@@ -144,8 +533,21 @@ class SimpleKT(nn.Module):
             else:
                 self.qa_embed = nn.Embedding(2, embed_l)
 
-        # Transformer architecture
-        self.model = SimpleKTArchitecture(
+        # `_gru` swaps the sequence module and nothing else: same input layer,
+        # same prediction head, same everything the embedding stage builds.
+        # It is the last undecomposed difference between this model and CGMKT,
+        # which runs one GRU over an additively fused dual branch and scores
+        # 0.7942 where every input-layer mechanism transferred here
+        # (vector shrinkage +0.0020, text +0.0018, additive form -0.0003) came
+        # back non-significant.
+        #
+        # A GRU at d=256 has 394,752 parameters against the transformer's
+        # 711,168, so a gain here cannot be capacity.
+        self.gru_backbone = emb_type.find("gru") != -1
+        if self.gru_backbone:
+            self.model = nn.GRU(emb_size, emb_size, batch_first=True)
+        else:
+            self.model = SimpleKTArchitecture(
             num_c=num_c,
             num_blocks=num_blocks,
             n_heads=num_attn_heads,
@@ -155,7 +557,10 @@ class SimpleKT(nn.Module):
             d_ff=d_ff,
             kq_same=self.kq_same,
             seq_len=seq_len,
-        )
+            # `_lnwrap` (see SimpleKTArchitecture) is the FlucKT-wrapper
+            # transplant arm; every other emb_type leaves it off.
+            lnwrap=emb_type.find("lnwrap") != -1,
+            )
 
         self.out = nn.Sequential(
             nn.Linear(emb_size + embed_l, final_fc_dim),
@@ -177,6 +582,30 @@ class SimpleKT(nn.Module):
                     "emb_type 'frozen' needs question ids; this dataset gave "
                     "num_pid=0."
                 )
+            if self.learned_shrinkage:
+                if difficulty_ingredients is None:
+                    raise ValueError(
+                        "emb_type contains 'learnw' but no difficulty_ingredients "
+                        "were supplied. They come from SimpleKT.Inputs.prepare, "
+                        "which only runs through the training runner."
+                    )
+                counts = np.asarray(difficulty_ingredients["count"])
+                if counts.shape[0] != self.num_pid + 1:
+                    raise ValueError(
+                        f"difficulty_ingredients have {counts.shape[0]} rows, "
+                        f"expected num_pid + 1 = {self.num_pid + 1}."
+                    )
+                # Replaces the Embedding outright; the call signature matches, so
+                # the two `self.difficult_param(pid_data)` sites do not change.
+                self.difficult_param = LearnedShrinkageDifficulty(
+                    rate=difficulty_ingredients["rate"],
+                    target=difficulty_ingredients["target"],
+                    count=counts,
+                    base_rate=difficulty_ingredients["base_rate"],
+                    init_alpha=frozen_difficulty_alpha,
+                    zero_unseen=not difficulty_ingredients.get("cold_start", False),
+                )
+                return
             if frozen_item_difficulty is None:
                 raise ValueError(
                     "emb_type contains 'frozen' but no frozen_item_difficulty "
@@ -283,7 +712,21 @@ class SimpleKT(nn.Module):
                     "SimpleKT Rasch difficulty requires qseqs/shft_qseqs "
                     "or pidseqs/shft_pidseqs. Set num_pid=0 for concept-only data."
                 )
-            if self.emb_type.find("aktrasch") == -1:
+            if self.additive_item:
+                # CGMKT adds its item representation outright -- `x_t = x_pro +
+                # x_kc` -- where simpleKT multiplies it by a concept-dependent
+                # direction. The Rasch form constrains the item term to a
+                # scaling along `q_embed_diff`; the additive form does not, and
+                # that is the last undecomposed difference between the two
+                # models here (~0.0035 of CGMKT's 0.0084 margin remained after
+                # its text embeddings, question branch and mastery module were
+                # each measured).
+                #
+                # `q_embed_diff` is unused under this branch, so the arm has
+                # 31,744 FEWER parameters than `qid` at d=256. A gain therefore
+                # cannot be capacity.
+                q_embed_data = q_embed_data + self.difficult_param(pid_data)
+            elif self.emb_type.find("aktrasch") == -1:
                 q_embed_diff_data = pool_concept_embeddings(
                     self.q_embed_diff, q_data, self.num_c
                 )
@@ -304,6 +747,17 @@ class SimpleKT(nn.Module):
         return Embeddings(query=q_embed_data, history=qa_embed_data)
 
     def encode(self, emb):
+        if self.gru_backbone:
+            # SimpleKTArchitecture attends with `np.triu(..., k=0)` and
+            # `zero_pad=True`, so position t sees interactions 0..t-1 and never
+            # its own response. A GRU's h[t] covers 0..t inclusive, so it is
+            # shifted by one and the first position zeroed to match exactly.
+            # Without this the model reads the label it is predicting; the
+            # contract test in tests/test_model_contracts.py checks for it.
+            hidden, _ = self.model(emb.history)
+            shifted = torch.zeros_like(hidden)
+            shifted[:, 1:] = hidden[:, :-1]
+            return shifted
         # Pass through transformer
         return self.model(emb.query, emb.history)
 
@@ -365,9 +819,25 @@ class SimpleKTArchitecture(nn.Module):
         dropout,
         kq_same,
         seq_len,
+        lnwrap=False,
     ):
         super().__init__()
         self.d_model = d_model
+
+        # `lnwrap` bolts FlucKT's FrequencyLayer wrapper -- LN(s + Dropout(s)),
+        # i.e. the layer with its gate pinned at beta==1 -- onto both streams
+        # of a *different* backbone. On assist2012 that pinned layer reproduced
+        # full FlucKT's window AUC to -0.0001 (five folds), so the transplant
+        # asks whether the +0.004-class margin is a portable regulariser or an
+        # AKT-backbone artefact. Placement matches FlucKT exactly: after the
+        # position embedding, before the first block, on both the query and the
+        # interaction stream, same layer for both. Adds only the LayerNorm's
+        # 2*d affine parameters (FlucKT's wrapper LN is affine too; 128 of
+        # ~306k here), so any difference against `qid` cannot be capacity.
+        self.lnwrap = lnwrap
+        if lnwrap:
+            self.ln_wrap_dropout = nn.Dropout(dropout)
+            self.ln_wrap_norm = nn.LayerNorm(d_model)
 
         self.blocks_2 = nn.ModuleList(
             [
@@ -397,6 +867,10 @@ class SimpleKTArchitecture(nn.Module):
 
         y = qa_pos_embed
         x = q_pos_embed
+
+        if self.lnwrap:
+            x = self.ln_wrap_norm(x + self.ln_wrap_dropout(x))
+            y = self.ln_wrap_norm(y + self.ln_wrap_dropout(y))
 
         # Encoder
         for block in self.blocks_2:

@@ -199,27 +199,105 @@ def main(
         "--emb_size", "--emb-size",
         help="Embedding size for training"
         ),
+    frozen_difficulty_alpha: Optional[float] = typer.Option(
+        None,
+        "--frozen_difficulty_alpha", "--frozen-difficulty-alpha",
+        help="Shrinkage strength for SimpleKT's frozen difficulty table "
+             "(qid_frozen*). An item is pulled towards its target with weight "
+             "alpha/(n_i+alpha), so the same alpha is a different method at "
+             "different observations-per-item. Default 10.",
+        ),
+    frozen_difficulty_group_seed: Optional[int] = typer.Option(
+        None,
+        "--frozen_difficulty_group_seed", "--frozen-difficulty-group-seed",
+        help="Seed for the qid_frozen_grouprand control's group reshuffle.",
+        ),
+    memory_rule: Optional[str] = typer.Option(
+        None, "--memory-rule", help="simplekt_delta: delta, ema, kc_ema, or none.",
+        ),
+    memory_dim: Optional[int] = typer.Option(
+        None, "--memory-dim", help="Dimension of the associative residual memory.",
+        ),
+    memory_rate: Optional[float] = typer.Option(
+        None, "--memory-rate", help="Fixed residual-memory write rate in [0,1].",
+        ),
 
-    # Attention options
+    # CGMKT's three artefact sources. The paper and the released code disagree
+    # about what the question graph and the KC graph are (models/cgmkt_graphs.py
+    # records the evidence), so which variant a run took has to be stated rather
+    # than implied by the model name.
+    question_graph_source: Optional[str] = typer.Option(
+        None,
+        "--question_graph_source", "--question-graph-source",
+        help="CGMKT question branch: 'incidence' (the released code's padded "
+             "Q-matrix) or 'cooccur' (the paper's A@A.T co-occurrence graph).",
+        ),
+    kc_graph_source: Optional[str] = typer.Option(
+        None,
+        "--kc_graph_source", "--kc-graph-source",
+        help="CGMKT KC branch: 'sbm_random' (the released pipeline's untrained "
+             "forward pass), 'sbm_fit' (a real likelihood fit, train folds "
+             "only), 'cooccur', or 'random'.",
+        ),
+    kc_embedding_source: Optional[str] = typer.Option(
+        None,
+        "--kc_embedding_source", "--kc-embedding-source",
+        help="CGMKT concept vectors: 'bge' (the skill-name text embeddings) or "
+             "'random' (same shape and norm, no semantics). Separates sharing "
+             "statistical strength from using what the names mean.",
+        ),
+    use_mastery: Optional[bool] = typer.Option(
+        None,
+        "--use_mastery/--no-use-mastery", "--use-mastery/--no_use_mastery",
+        help="CGMKT's group-level mastery module. --no-use-mastery is the "
+             "paper's 'w/o mastery state' arm: gating, propagation, updating "
+             "and readout all bypassed, GRU over the fused sequence alone.",
+        ),
+    group_source: Optional[str] = typer.Option(
+        None,
+        "--group_source", "--group-source",
+        help="CGMKT knowledge groups: 'spectral' (what every released run "
+             "silently falls back to), 'sbm_fit', or 'random'.",
+        ),
+    num_clusters: Optional[int] = typer.Option(
+        None,
+        "--num_clusters", "--num-clusters",
+        help="CGMKT's number of knowledge groups k. The paper sweeps 2-9 and "
+             "selects 9, the top of its own grid.",
+        ),
+    graph_seed: Optional[int] = typer.Option(
+        None,
+        "--graph_seed", "--graph-seed",
+        help="Seed for CGMKT's graph and group construction. Upstream left this "
+             "unset, so its graphs were not reproducible across regenerations.",
+        ),
+
+    # Attention options. These default to None, like every other hyperparameter
+    # option here, because `apply_overrides` writes any non-None value straight
+    # into the model config: a concrete default would silently replace the
+    # per-model value for every run that did not ask for it. With d_ff=512 it
+    # rewrote 20 of the 45 models -- akt from n_blocks 1 to 4, and d_ff 256 to
+    # 512 across the whole AKT family -- while the run's own log still printed
+    # the number it had overwritten.
     d_model: Optional[int] = typer.Option(
-        256,
+        None,
         "--d_model", "--d-model",
-        help="Dimension of the model"
+        help="Dimension of the model. Unset: use the model's kt_config value."
         ),
     d_ff: Optional[int] = typer.Option(
-        512,
+        None,
         "--d_ff", "--d-ff",
-        help="Dimension of the feed forward network"
+        help="Dimension of the feed forward network. Unset: use kt_config."
         ),
     num_attn_heads: Optional[int] = typer.Option(
-        8,
+        None,
         "--num_attn_heads", "--num-attn-heads",
-        help="Number of attention heads"
+        help="Number of attention heads. Unset: use kt_config."
         ),
     n_blocks: Optional[int] = typer.Option(
-        4,
+        None,
         "--n_blocks", "--n-blocks",
-        help="Number of transformer blocks"
+        help="Number of transformer blocks. Unset: use kt_config."
         ),
 
     # Training options
@@ -359,6 +437,18 @@ def main(
             "d_ff": d_ff,
             "num_attn_heads": num_attn_heads,
             "n_blocks": n_blocks,
+            "question_graph_source": question_graph_source,
+            "kc_graph_source": kc_graph_source,
+            "group_source": group_source,
+            "kc_embedding_source": kc_embedding_source,
+            "use_mastery": use_mastery,
+            "num_clusters": num_clusters,
+            "graph_seed": graph_seed,
+            "frozen_difficulty_alpha": frozen_difficulty_alpha,
+            "frozen_difficulty_group_seed": frozen_difficulty_group_seed,
+            "memory_rule": memory_rule,
+            "memory_dim": memory_dim,
+            "memory_rate": memory_rate,
         }
         return train_one_fold(
             dataset_name=dataset_name,

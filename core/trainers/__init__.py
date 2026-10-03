@@ -3,6 +3,7 @@ from .dkt_pebg_trainer import DKTPEBGTrainer  # noqa: F401
 from .dkt_plus_trainer import DKTPlusTrainer  # noqa: F401
 from .dkvmn_trainer import DKVMNTrainer  # noqa: F401
 from .akt_trainer import AKTTrainer, LEFOKTAKTTrainer  # noqa: F401
+from .fokt_trainer import FoKTTrainer  # noqa: F401
 from .sakt_trainer import SAKTTrainer  # noqa: F401
 from .qikt_trainer import QIKTTrainer  # noqa: F401
 from .gkt_trainer import GKTTrainer  # noqa: F401
@@ -16,6 +17,7 @@ from .hdkt_trainer import HDKTTrainer  # noqa: F401
 from .deep_irt_trainer import DeepIRTTrainer  # noqa: F401
 from .saint_trainer import SAINTTrainer, SAINTpTrainer  # noqa: F401
 from .simplekt_trainer import SimpleKTTrainer  # noqa: F401
+from .simplekt_delta_trainer import SimpleKTDeltaTrainer  # noqa: F401
 from .nullkt_trainer import NullKTTrainer  # noqa: F401
 from .ukt_trainer import UKTTrainer  # noqa: F401
 from .keenkt_trainer import KeenKTTrainer  # noqa: F401
@@ -33,6 +35,7 @@ from .fakt_trainer import FAKTTrainer  # noqa: F401
 from .mtkt_trainer import MTKTTrainer  # noqa: F401
 from .rekt_trainer import ReKTTrainer  # noqa: F401
 from .hqaf_trainer import HQAFTrainer  # noqa: F401
+from .cgmkt_trainer import CGMKTTrainer  # noqa: F401
 
 # One mixin covers every plugged backbone; see core/trainers/plugin_trainer.py.
 from .plugin_trainer import (  # noqa: F401

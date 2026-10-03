@@ -498,14 +498,25 @@ class MultiHeadAttention(nn.Module):
         maxpos = 1000
         attn_heads = n_heads  
         
-        context_position = torch.arange(maxpos)[:, None].cuda()
-        memory_position = torch.arange(maxpos)[None, :].cuda()
-        relative_position = memory_position - context_position 
+        # Upstream hardcoded `.cuda()` on these three and left them as plain
+        # attributes, which does three things: the model cannot be built on CPU,
+        # it pins to device 0 whatever --gpu says, and `model.to(device)` cannot
+        # move them because plain attributes are not part of the module state.
+        # It is not free either -- `alibi` is [1, n_heads, 1000, 1000], so one
+        # construction reserved ~183 MB of VRAM before training started, even
+        # for a run that asked for CPU. Built on CPU and registered as buffers.
+        # tests/test_model_contracts.py did not catch it: it reads
+        # named_parameters()/named_buffers(), and an unregistered attribute
+        # appears in neither.
+        context_position = torch.arange(maxpos)[:, None]
+        memory_position = torch.arange(maxpos)[None, :]
+        relative_position = memory_position - context_position
         relative_position = torch.abs(relative_position).unsqueeze(0).expand(attn_heads, -1,-1)
 
-        self.slopes = torch.Tensor(get_slopes(attn_heads)).cuda()*-1
-        self.alibi = self.slopes.unsqueeze(1).unsqueeze(1) * relative_position
-        self.alibi = self.alibi.view(1, attn_heads, maxpos, maxpos)
+        slopes = torch.Tensor(get_slopes(attn_heads))*-1
+        alibi = slopes.unsqueeze(1).unsqueeze(1) * relative_position
+        self.register_buffer("slopes", slopes, persistent=False)
+        self.register_buffer("alibi", alibi.view(1, attn_heads, maxpos, maxpos), persistent=False)
 
 
     def _reset_parameters(self):

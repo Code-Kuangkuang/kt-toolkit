@@ -15,6 +15,10 @@ excitation gates, and Rasch-style item variation. It deliberately uses an
 explicit strict-causal mask and a padding-aware masked softmax. Therefore the
 prediction at position ``t`` can use responses only from positions ``< t``;
 the response at ``t`` is never visible to its own prediction.
+
+Correctness repair (2026-10-03): concepts retain [B,T,K] through the Trainer
+and are pooled over valid slots. Padding is sanitized with the explicit mask;
+question and response tensors remain [B,T].
 """
 
 from __future__ import annotations
@@ -28,7 +32,7 @@ import torch.nn.functional as F
 
 from core.model_inputs import InputSpec
 from core.registry import MODEL_REGISTRY
-from .multi_concept import pool_concept_embeddings, pool_interaction_embeddings
+from .multi_concept import concept_validity, pool_concept_embeddings, pool_interaction_embeddings
 
 
 def _pairwise_nig_distance(
@@ -340,6 +344,12 @@ class KeenKT(nn.Module):
         dataset_mode = "all_in_one"
         requires_question_ids = True
 
+        @classmethod
+        def prepare(cls, ctx):
+            inputs = super().prepare(ctx)
+            inputs.run_config_extras["model_correctness_revision"] = "2026-10-03"
+            return inputs
+
     """Normal-Inverse-Gaussian knowledge tracing with causal attention."""
 
     def __init__(
@@ -561,21 +571,34 @@ class KeenKT(nn.Module):
         concepts = concepts.long()
         questions = questions.long()
         responses = responses.long()
-        if concepts.shape != questions.shape or concepts.shape != responses.shape:
+        if (questions.dim() != 2 or responses.shape != questions.shape
+                or concepts.dim() not in (2, 3)
+                or concepts.shape[:2] != questions.shape):
             raise ValueError(
-                "KeenKT expects concepts, questions, and responses with the "
-                f"same [B, T] shape, got {tuple(concepts.shape)}, "
+                "KeenKT expects concepts [B,T] or [B,T,K], and questions "
+                f"and responses [B,T], got {tuple(concepts.shape)}, "
                 f"{tuple(questions.shape)}, and {tuple(responses.shape)}."
             )
-        self._check_ids("concept", concepts, self.num_c)
-        self._check_ids("question", questions, self.num_q)
-        self._check_ids("response", responses, 2)
         if valid_mask is None:
             valid_mask = torch.ones_like(responses, dtype=torch.bool)
         else:
             valid_mask = valid_mask.to(device=responses.device, dtype=torch.bool)
         if valid_mask.shape != responses.shape:
             raise ValueError("KeenKT valid_mask must match response shape.")
+
+        # Invalid padding never reaches an embedding; -1 KC slots stay masked.
+        concepts = concepts.masked_fill(
+            ~valid_mask.unsqueeze(-1) if concepts.dim() == 3 else ~valid_mask, -1
+        )
+        if (concepts < -1).any():
+            raise ValueError("KeenKT concept ids must be -1 or valid ids.")
+        _, has_concept = concept_validity(concepts, self.num_c)
+        if (valid_mask & ~has_concept).any():
+            raise ValueError("KeenKT found a valid question without a concept.")
+        self._check_ids("question", questions[valid_mask], self.num_q)
+        self._check_ids("response", responses[valid_mask], 2)
+        questions = questions.masked_fill(~valid_mask, 0)
+        responses = responses.masked_fill(~valid_mask, 0)
 
         q_mean, q_uncertainty, qa_mean, qa_uncertainty = self._embed(
             concepts,

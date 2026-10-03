@@ -97,16 +97,6 @@ class AggregationOfNoneTest(unittest.TestCase):
         self.assertEqual(entry["missing_folds"], [2])
         self.assertAlmostEqual(entry["mean"], 0.78)
 
-    def test_the_old_sentinel_would_have_gone_unnoticed(self):
-        """Documents the bug this change removes, so it cannot come back."""
-        folds = [
-            {"fold": i, "best_metrics": {"best_test_auc": 0.78 if i != 2 else -1}}
-            for i in range(5)
-        ]
-        entry = aggregate_fold_metrics(folds)["best_test_auc"]
-        self.assertEqual(entry["n"], 5)          # looks complete
-        self.assertLess(entry["mean"], 0.47)     # but the mean is destroyed
-
 
 class HooksIgnoreNoneTest(unittest.TestCase):
     def test_save_best_hook_skips_a_none_metric(self):

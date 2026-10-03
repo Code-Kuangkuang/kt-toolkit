@@ -351,6 +351,7 @@ def main():
     args = parser.parse_args()
 
     extra = shlex.split(args.train_args)
+    failures = []
 
     if not args.summarize_only:
         todo = [(d, m, f) for d in args.datasets for m in args.models for f in args.folds
@@ -363,7 +364,6 @@ def main():
             return 0
 
         manifest_path = Path(args.save_root) / "manifest.jsonl"
-        failures = []
         for i, (dataset, model, fold) in enumerate(todo, 1):
             print(f"[{i}/{len(todo)}] {dataset} / {model} / fold {fold} ...", flush=True)
             code, minutes, log_path = train_one(
@@ -383,8 +383,9 @@ def main():
                 print(f"  {dataset} / {model} / fold {fold}  →  {log_path}")
         print(f"\n每格的用时与退出码：{manifest_path}\n")
 
-    return summarize(args.save_root, args.datasets, args.models,
-                     args.folds, args.seed, args.out, aggregate=args.aggregate)
+    summary_status = summarize(args.save_root, args.datasets, args.models,
+                               args.folds, args.seed, args.out, aggregate=args.aggregate)
+    return 1 if failures else summary_status
 
 
 if __name__ == "__main__":

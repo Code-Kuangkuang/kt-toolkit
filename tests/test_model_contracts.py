@@ -27,6 +27,7 @@ skip list is the honest statement of what is still uncovered.
 """
 
 import json
+import inspect
 import os
 import sys
 import unittest
@@ -110,7 +111,7 @@ KNOWN_ALIGNMENT_VIOLATIONS = {}
 # covered by a training run.
 FITS_FROM_REAL_DATA = {
     "dimkt", "hqaf", "lpkt", "hdkt", "dkt_forget", "dgekt", "gkt", "dkt_pebg",
-    "denoisekt", "hcgkt", "mtkt", "fakt", "nullkt",
+    "denoisekt", "hcgkt", "mtkt", "fakt", "nullkt", "cgmkt", "simplekt_delta",
 }
 
 
@@ -147,9 +148,48 @@ def _synthetic_question_graph():
     normalised = inverse_sqrt_degree[:, None] * ring * inverse_sqrt_degree[None, :]
     return normalised.to_sparse().coalesce()
 
+def _synthetic_cgmkt_artefacts():
+    """Stand-ins for what CGMKT.Inputs.prepare builds from the Q-matrix.
+
+    `num_clusters` has to match configs/kt_config.json, because the model checks
+    the membership against it rather than inferring k from the tensor -- a
+    mismatch there would silently attach mastery to the wrong groups. Having
+    more groups than concepts is fine and is what happens here (k=9, NUM_C=7):
+    the surplus groups stay empty, which is also what a real run does whenever
+    spectral clustering cannot fill every block.
+    """
+    clusters = 9
+    ring = torch.eye(NUM_C)
+    for node in range(NUM_C):
+        ring[node, (node + 1) % NUM_C] = 1.0
+    kc_graph = ring / ring.sum(1, keepdim=True)
+
+    membership = torch.zeros(NUM_C, clusters)
+    membership[torch.arange(NUM_C), torch.arange(NUM_C) % clusters] = 1.0
+
+    transition = torch.ones(clusters, clusters) - torch.eye(clusters)
+    transition = transition / transition.sum(1, keepdim=True)
+
+    return {
+        "question_graph": _synthetic_question_graph(),
+        "kc_graph": kc_graph,
+        "membership": membership,
+        "group_transition": transition,
+        "concept_map": _synthetic_concept_map(),
+        # Stands in for the downloaded BGE vectors; only the width matters, as
+        # both embedding branches project it through a Linear.
+        "concept_embedding": torch.randn(NUM_C, 32),
+    }
+
+
 # What those specs would have produced, at sizes this harness can use. Values are
 # arbitrary but must exceed the ids the synthetic batch generates.
 COMPUTED_CONSTRUCTOR_ARGS = {
+    "simplekt_delta": {
+        "concept_map": _synthetic_concept_map(),
+        "item_count": torch.arange(NUM_Q + 1).float(),
+    },
+    "cgmkt": _synthetic_cgmkt_artefacts(),
     "dkt_forget": {"num_rgap": 8, "num_sgap": 8, "num_pcount": 8},
     "lpkt": {"num_at": 128, "num_it": 16},
     "hdkt": {"num_at": 128, "num_it": 16},
@@ -296,6 +336,12 @@ def synth_batch(dataset_mode, concept_shape="3d", seq_len=SEQ_POSITIONS, device=
         "historycorrs": torch.rand(BATCH, seq_len, generator=g).to(device),
         "shft_historycorrs": torch.rand(BATCH, seq_len, generator=g).to(device),
     }
+    # Both views describe ONE full sequence. Independent random views made a
+    # response perturbation meaningless for trainers rebuilding from shft_*.
+    for key in list(batch):
+        shifted = batch.get("shft_" + key)
+        if shifted is not None:
+            batch[key] = torch.cat((batch[key][:, :1], shifted[:, :-1]), dim=1)
     return batch
 
 
@@ -364,14 +410,12 @@ class _MinimalContext:
         return f"{base_key}_quelevel" if self.dataset_mode == "all_in_one" else base_key
 
 
-def forward(trainer, batch):
+def forward(trainer, batch, train=False):
     """Call `_forward_batch` across its two shapes and return (pred, target, loss)."""
-    try:
+    if "train" in inspect.signature(trainer._forward_batch).parameters:
+        result = trainer._forward_batch(batch, train=train)
+    else:
         result = trainer._forward_batch(batch)
-    except TypeError as exc:
-        if "train" not in str(exc):
-            raise
-        result = trainer._forward_batch(batch, train=True)
     # akt returns (pred, target, reg_loss, loss); everyone else (pred, target, loss).
     pred, target = result[0], result[1]
     loss = result[-1]
@@ -425,7 +469,7 @@ class ModelContractTest(unittest.TestCase):
                 model, trainer = make_model_and_trainer(name, mode)
                 batch = synth_batch(mode, runner_concept_shape(name, mode))
 
-                pred, target, loss = forward(trainer, batch)
+                pred, target, loss = forward(trainer, batch, train=True)
 
                 # 5. alignment
                 self.assertEqual(
@@ -522,6 +566,28 @@ class ModelContractTest(unittest.TestCase):
                     "instead of the one it was given.",
                 )
 
+                # A tensor stored as a plain attribute rather than a buffer is
+                # in neither named_parameters() nor named_buffers(), so the
+                # check above cannot see it -- and it also does not move under
+                # model.to(device). MoC-KT and FlucKT each kept twelve such
+                # tensors, built with a hardcoded `.cuda()`: an alibi of shape
+                # [1, n_heads, 1000, 1000] per attention layer, about 183 MB of
+                # VRAM reserved by a model that had asked for CPU. Forward still
+                # returned CPU predictions because that emb_type never read
+                # them, which is exactly why this needs its own assertion.
+                strays = [
+                    f"{type(module).__name__}.{attr} {tuple(value.shape)} on {value.device}"
+                    for module in trainer.model.modules()
+                    for attr, value in vars(module).items()
+                    if torch.is_tensor(value) and value.device.type != "cpu"
+                ]
+                self.assertEqual(
+                    strays, [],
+                    f"{name}: built on CPU but holds tensors on another device "
+                    f"as plain attributes: {strays}. Register them with "
+                    "register_buffer so model.to() moves them.",
+                )
+
     def test_5_inference_is_deterministic_in_eval_mode(self):
         """Two forwards over the same batch, in eval, must give the same answer.
 
@@ -573,8 +639,8 @@ class ModelContractTest(unittest.TestCase):
     def test_6_a_future_response_cannot_move_a_past_prediction(self):
         """The leak that matters most: prediction at t must not see response t.
 
-        `rseqs[:, -1]` is the last input response and legitimately feeds only the
-        final prediction. Flipping it must leave every earlier prediction alone.
+        Flip current/future responses in BOTH aligned input views. A trainer
+        rebuilding from shft_rseqs must see the perturbation too.
 
         Determinism is established by the test above, so any movement here is
         attributable. The threshold stays calibrated rather than fixed, because
@@ -589,30 +655,25 @@ class ModelContractTest(unittest.TestCase):
                 trainer.model.eval()
 
                 batch = synth_batch(mode, runner_concept_shape(name, mode))
-                flipped = dict(batch)
-                flipped["rseqs"] = batch["rseqs"].clone()
-                flipped["rseqs"][:, -1] = 1 - flipped["rseqs"][:, -1]
-
                 with torch.no_grad():
                     base, _, _ = forward(trainer, batch)
                     repeat, _, _ = forward(trainer, batch)
-                    after, _, _ = forward(trainer, flipped)
-
-                # smasks is all true, so pred is [B, T] flattened row-major and
-                # column t maps back to position t.
-                past = slice(None, -1)
-                noise = (base.view(BATCH, -1)[:, past]
-                         - repeat.view(BATCH, -1)[:, past]).abs().max()
-                moved = (base.view(BATCH, -1)[:, past]
-                         - after.view(BATCH, -1)[:, past]).abs().max()
-
-                self.assertLessEqual(
-                    float(moved), max(float(noise), 1e-6) * 10,
-                    f"{name}: flipping the LAST response moved earlier predictions "
-                    f"by up to {float(moved):.3e}, against a run-to-run noise floor "
-                    f"of {float(noise):.3e}. The forward pass lets a response "
-                    "influence a prediction at or before its own step.",
-                )
+                    full = torch.cat((batch["rseqs"][:, :1], batch["shft_rseqs"]), dim=1)
+                    for position in (1, SEQ_POSITIONS // 2, SEQ_POSITIONS):
+                        changed = full.clone()
+                        changed[:, position:] = 1 - changed[:, position:]
+                        flipped = dict(batch, rseqs=changed[:, :-1], shft_rseqs=changed[:, 1:])
+                        after, _, _ = forward(trainer, flipped)
+                        # Flattened column j predicts full-sequence position j+1.
+                        noise = (base.view(BATCH, -1)[:, :position]
+                                 - repeat.view(BATCH, -1)[:, :position]).abs().max()
+                        moved = (base.view(BATCH, -1)[:, :position]
+                                 - after.view(BATCH, -1)[:, :position]).abs().max()
+                        self.assertLessEqual(
+                            float(moved), max(float(noise), 1e-6) * 10,
+                            f"{name}: responses at/after {position} moved current/past "
+                            f"predictions by {float(moved):.3e} (noise {float(noise):.3e}).",
+                        )
 
 
 if __name__ == "__main__":

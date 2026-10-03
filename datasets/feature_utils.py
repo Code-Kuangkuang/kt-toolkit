@@ -365,7 +365,8 @@ def _to_time_bin(value, edges, num_time_bins):
 
 
 def compute_item_difficulty_logodds(dpath, train_valid_file, num_q, folds=None,
-                                    alpha=10.0, grouping=None, group_seed=3407):
+                                    alpha=10.0, grouping=None, group_seed=3407,
+                                    cold_start=False, concept_alias=None):
     """Per-question empirical difficulty as a standardised log-odds vector.
 
     Answers a question the learned Rasch scalar raises: SimpleKT's `qid_scalar`
@@ -373,7 +374,7 @@ def compute_item_difficulty_logodds(dpath, train_valid_file, num_q, folds=None,
     0.91-correlated (within concept, Spearman) with the question's training-fold
     correct rate.  If the gradient is only recovering a count, the count can be
     supplied directly and the parameter frozen -- which is what this table is
-    for.  See docs/results_item_parameterisation.md.
+    for.  See research/results_item_parameterisation.md.
 
     Shape is `[num_q + 1]`, matching `Embedding(num_pid + 1, 1)`; the last row is
     the padding slot and stays at 0.
@@ -416,12 +417,91 @@ def compute_item_difficulty_logodds(dpath, train_valid_file, num_q, folds=None,
     """
     tables = compute_difficulty_logodds_tables(
         dpath, train_valid_file, folds=folds, num_q=num_q, alpha=alpha,
-        grouping=grouping, group_seed=group_seed,
+        grouping=grouping, group_seed=group_seed, cold_start=cold_start,
+        concept_alias=concept_alias,
     )
     return tables["items"]
 
 
-def _standardised_logodds(correct, total, p0, alpha, target=None):
+def compute_item_difficulty_ingredients(dpath, train_valid_file, num_q,
+                                        folds=None, grouping=None,
+                                        group_seed=3407, cold_start=False,
+                                        concept_alias=None):
+    """The parts `compute_item_difficulty_logodds` folds together, kept separate.
+
+    That function applies the shrinkage itself, at a fixed `alpha`, and returns
+    one number per item. An arm that wants to *learn* how hard to shrink has to
+    do the fold inside the model, where a gradient can reach it, so it needs the
+    three inputs rather than the result:
+
+        rate    [num_q+1]  the item's own training-fold correct rate, 0 unseen
+        target  [num_q+1]  what it shrinks towards -- the global rate under
+                           `grouping=None`, the item's leave-one-out group rate
+                           otherwise
+        count   [num_q+1]  how many training-fold responses the item has, which
+                           is what the shrinkage weight is a function of
+
+    plus the scalar `base_rate` the log-odds are centred on. `alpha` is absent
+    on purpose: it is exactly the quantity the caller is no longer fixing.
+
+    Same rows, same folds and same grouping as the frozen table, so the two arms
+    differ in one thing only.
+    """
+    tables = compute_difficulty_logodds_tables(
+        dpath, train_valid_file, folds=folds, num_q=num_q,
+        grouping=grouping, group_seed=group_seed, with_ingredients=True,
+        cold_start=cold_start, concept_alias=concept_alias,
+    )
+    return {
+        "rate": tables["item_rate"],
+        "target": tables["item_target"],
+        "count": tables["item_count"],
+        "base_rate": tables["base_rate"],
+        "cold_start": bool(cold_start),
+    }
+
+
+def _question_groups_from_qmatrix(dpath, num_q):
+    """First concept of every question, read from `qmatrix.npz` rather than rows.
+
+    The counting pass can only resolve a question's concept if the question
+    appears in a training-fold row, so a question that does not becomes a
+    singleton and shrinks towards the global rate. On assist2009 that is 625 of
+    17,738 items -- and they are exactly the items grouping is supposed to
+    rescue, since an item with no observations has nothing else to go on. The
+    `_grouped` and `_grouprand` arms are therefore identical on the subset where
+    the hypothesis has the most to say.
+
+    Reading the membership from the Q-matrix instead fixes that, and it leaks
+    nothing: `cseqs` already carries the concept ids of test questions into
+    every batch, so question-to-concept is information the model is handed at
+    inference time regardless. What stays fitted to the training folds is the
+    group's *rate*; only the membership comes from metadata.
+
+    Returns `[num_q + 1]` of concept ids, `-1` where a question has no concept.
+    """
+    path = os.path.join(dpath, "qmatrix.npz")
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"Cold-start grouping reads question membership from {path}, which "
+            f"is missing. Build it with `python scripts/build_qmatrix.py --dataset-name <dataset>`."
+        )
+    qmatrix = np.load(path)["matrix"][:num_q] > 0
+    groups = np.full(num_q + 1, -1, dtype=np.int64)
+    rows, cols = np.nonzero(qmatrix)
+    if not len(rows):
+        return groups
+    # np.nonzero yields rows ascending, so the first hit per row is its first
+    # concept -- the same choice the counting pass makes with `cids[0]`.
+    first = np.searchsorted(rows, np.arange(num_q))
+    has_concept = first < len(rows)
+    valid = has_concept & (rows[np.minimum(first, len(rows) - 1)] == np.arange(num_q))
+    groups[np.arange(num_q)[valid]] = cols[first[valid]]
+    return groups
+
+
+def _standardised_logodds(correct, total, p0, alpha, target=None,
+                          zero_unseen=True):
     """The shared core of the difficulty tables. See the caller for the choices.
 
     `target` is what each row is shrunk *towards*. Scalar `p0` by default, which
@@ -440,8 +520,9 @@ def _standardised_logodds(correct, total, p0, alpha, target=None):
     scale = float(logodds[seen].std())
     if scale > 0:
         logodds = logodds / scale
-    logodds[~seen] = 0.0
-    logodds[-1] = 0.0  # padding slot
+    if zero_unseen:
+        logodds[~seen] = 0.0
+    logodds[-1] = 0.0  # padding slot, never a real item
     return logodds.astype(np.float32)
 
 
@@ -531,7 +612,9 @@ def _dense_groups(q_group, rng=None):
 
 def compute_difficulty_logodds_tables(dpath, train_valid_file, folds=None,
                                       num_q=None, num_c=None, alpha=10.0,
-                                      grouping=None, group_seed=3407):
+                                      grouping=None, group_seed=3407,
+                                      with_ingredients=False, cold_start=False,
+                                      concept_alias=None):
     """Question- and concept-level empirical difficulty, from one pass of the file.
 
     Returns `{"items": [num_q+1], "concepts": [num_c+1], "base_rate": p0}`, with
@@ -625,6 +708,33 @@ def compute_difficulty_logodds_tables(dpath, train_valid_file, folds=None,
                     c_correct[concept] += response
                     c_total[concept] += 1
 
+    if want_groups and cold_start:
+        # Fill in only the questions the pass could not resolve, i.e. the ones
+        # no training row touches. Filling gaps rather than replacing the whole
+        # assignment keeps `_cold` a one-variable change: the Q-matrix loses
+        # concept order, so its "first concept" is the lowest index while the
+        # CSV's is the first listed, and on a multi-concept question those
+        # disagree. Overwriting seen items would move ~20% of assist2009's
+        # questions into different groups and a `_cold` vs `_grouped` gap could
+        # no longer be attributed to the cold items.
+        missing = q_group < 0
+        if missing.any():
+            from_qmatrix = _question_groups_from_qmatrix(dpath, int(num_q))
+            q_group = np.where(missing, from_qmatrix, q_group)
+
+    if want_groups and concept_alias is not None:
+        # Collapse concept ids that name the same skill. Two items testing
+        # "Number Line" under two of its three ids otherwise shrink towards two
+        # different targets and neither borrows from the other.
+        #
+        # After the cold-start fill, not before: ids recovered from the Q-matrix
+        # have to be collapsed too, or a cold item lands in the uncollapsed half
+        # of a split skill and the two changes interact.
+        alias = np.asarray(concept_alias, dtype=np.int64)
+        inside = (q_group >= 0) & (q_group < len(alias))
+        # -1 stays -1, so an item with no concept at all is still a singleton.
+        q_group = np.where(inside, alias[np.clip(q_group, 0, len(alias) - 1)], q_group)
+
     # The base rate comes from question rows when we have them, so that a
     # multi-concept position is counted once rather than once per concept.
     if num_q is not None:
@@ -652,8 +762,32 @@ def compute_difficulty_logodds_tables(dpath, train_valid_file, folds=None,
                 )
             target = _leave_one_out_group_rate(q_correct, q_total, dense, p0)
             out["group_sizes"] = np.bincount(dense, minlength=len(dense))
-        out["items"] = _standardised_logodds(q_correct, q_total, p0, alpha,
-                                             target=target)
+            out["group_unresolved"] = int((q_group < 0).sum())
+        out["items"] = _standardised_logodds(
+            q_correct, q_total, p0, alpha, target=target,
+            # Under `cold_start` an unseen item keeps its group's rate instead
+            # of being reset to 0. The zeroing exists so `qid_frozen` stays a
+            # faithful frozen copy of the learned Rasch table, which gives an
+            # item with no gradient exactly 0 -- but that rationale is about the
+            # global-target arm. For a grouped arm it deletes the hypothesis:
+            # borrowing from the neighbourhood is most of the point, and an item
+            # with zero observations is where there is most to borrow.
+            zero_unseen=not cold_start,
+        )
+        if with_ingredients:
+            # The unshrunk parts, for the arm that learns the shrinkage weight
+            # instead of fixing it at `alpha`. `_standardised_logodds` folds
+            # these together irreversibly, so an arm that needs to differentiate
+            # through the fold has to be handed them separately.
+            seen_q = q_total > 0
+            out["item_rate"] = np.divide(
+                q_correct, q_total, out=np.zeros_like(q_correct), where=seen_q
+            )
+            out["item_count"] = q_total
+            out["item_target"] = (
+                np.full_like(q_total, p0) if target is None
+                else np.asarray(target, dtype=np.float64)
+            )
     if num_c is not None:
         out["concepts"] = _standardised_logodds(c_correct, c_total, p0, alpha)
     return out

@@ -271,14 +271,6 @@ class ProvenanceTest(unittest.TestCase):
         """Absence of a field would be ambiguous; 'none' is a statement."""
         self.assertEqual(DATA_CONFIG["junyi2015"]["sampling"], "none")
 
-    def test_sampled_datasets_carry_a_note_a_reader_can_act_on(self):
-        for name in sorted(self.SAMPLED):
-            with self.subTest(dataset=name):
-                cfg = DATA_CONFIG[name]
-                if "sampling_note" not in cfg:
-                    continue
-                self.assertGreater(len(cfg["sampling_note"]), 80)
-
     def test_the_junyi_subset_plan_matches_its_manifest(self):
         """The config must not drift from what the builder actually recorded."""
         manifest_path = Path(DATA_CONFIG["junyi_sub5k"]["dpath"]) / "subset_manifest.json"

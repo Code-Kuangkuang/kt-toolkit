@@ -3,9 +3,14 @@
     Frequency-Aware Knowledge Tracing with a heterogeneous mixture of experts.
 
 Source: pykt-team/pykt-toolkit, pykt/models/fa_kt.py (fetched 2026-09-20).
-The pykt classes below are kept verbatim; `FAKT` at the end of this file is the
+The pykt classes below retain their structure; `FAKT` at the end of this file is the
 thin adapter carrying registration, the input spec and the argument renaming --
 the same shape models/mtkt.py uses, so a future upstream diff stays readable.
+
+Correctness repair (2026-10-03): ThreeBandFrequencyLayer replaces whole-batch,
+whole-sequence standard deviation with per-student prefix RMS. The upstream
+normalization leaked future responses and made evaluation batch-dependent.
+This changes the learned function; old checkpoints/results need retraining.
 
 Why this model is here: it is the LEARNED-ROUTER counterpart to models/mockt.py.
 MoC-KT's Theorem 1 argues a learned gate collapses onto the head regime under a
@@ -663,10 +668,18 @@ class ThreeBandFrequencyLayer(nn.Module):
         mid_freq = lpf1_out - lpf2_out
         low_freq = lpf2_out
         
+        # [B,T,D]: each student's prefix RMS, never batch/future statistics.
+        # RMS is defined even for the first position (unlike prefix std).
         with torch.no_grad():
-            hf_std = high_freq.std(dim=(0, 1), keepdim=True) + 1e-8
-            mf_std = mid_freq.std(dim=(0, 1), keepdim=True) + 1e-8
-            lf_std = low_freq.std(dim=(0, 1), keepdim=True) + 1e-8
+            count = torch.arange(
+                1, input_tensor.size(1) + 1, device=input_tensor.device,
+                dtype=input_tensor.dtype,
+            ).view(1, -1, 1)
+            def prefix_scale(band):
+                return (band.square().cumsum(dim=1) / count).clamp_min(1e-8).sqrt()
+            hf_std = prefix_scale(high_freq)
+            mf_std = prefix_scale(mid_freq)
+            lf_std = prefix_scale(low_freq)
             
         high_freq = high_freq / hf_std
         mid_freq = mid_freq / mf_std
@@ -844,6 +857,7 @@ class FAKT(FA_KT):
             inputs.feature_fit_scope = (
                 "train_valid_test" if transductive else "train_folds"
             )
+            inputs.run_config_extras["model_correctness_revision"] = "2026-10-03"
             return inputs
 
     def __init__(

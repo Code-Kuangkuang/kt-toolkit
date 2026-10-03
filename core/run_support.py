@@ -204,6 +204,39 @@ def apply_overrides(train_cfg, model_cfg, overrides):
         "use_scalar_item_difficulty",
         "max_concept_fusion_weight",
         "response_function",
+        # SimpleKT's frozen difficulty table. `alpha` sets how hard an item is
+        # pulled towards its shrinkage target: the weight is alpha / (n_i + alpha),
+        # so at the default 10 it is 75% on algebra2005 (3.3 obs/item) and 4.8% on
+        # assist2017 (196). Leaving it fixed across datasets means the arms are
+        # not the same method at different sample sizes, they are different
+        # methods -- which is why it has to be sweepable.
+        "frozen_difficulty_alpha",
+        "frozen_difficulty_group_seed",
+        # Residual associative-memory experiment and its matched controls.
+        "memory_rule",
+        "memory_dim",
+        "memory_rate",
+        "residual_detach",
+        # CGMKT. The first three pick which side of the paper/code disagreement
+        # a run takes (see models/cgmkt_graphs.py); they have to be sweepable
+        # because the comparison between them IS the experiment.
+        "question_graph_source",
+        "kc_graph_source",
+        "kc_embedding_source",
+        "use_mastery",
+        "group_source",
+        "graph_seed",
+        "num_clusters",
+        "num_gcn_layers",
+        "dropout_qk",
+        "dropout_kk",
+        "mastery_update_hidden",
+        "mastery_step",
+        "mastery_bound",
+        "modulation_type",
+        "spread_type",
+        "spread_rate_init",
+        "spread_rate_max",
     }
     overrides = overrides or {}
     unknown = sorted(set(overrides) - train_keys - model_keys)

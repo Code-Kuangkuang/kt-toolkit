@@ -71,6 +71,55 @@ class ApplyOverridesTest(unittest.TestCase):
         self.assertIn("d_model", keys, "--d-model is defined but never forwarded")
         apply_overrides({}, {}, {key: None for key in keys})
 
+    def test_forwarded_cli_options_default_to_none(self):
+        """A concrete default on a forwarded option silently rewrites configs.
+
+        `apply_overrides` applies every non-None value, so an option whose
+        default is a number is not a default at all -- it is an unconditional
+        override of the model's own kt_config entry, applied to runs that never
+        mentioned it. d_ff=512 and n_blocks=4 did exactly that to 20 of the 45
+        models while each run's log still printed the value being overwritten.
+        """
+        import ast
+
+        source = (ROOT / "scripts" / "train.py").read_text(encoding="utf-8")
+        block = source.split("overrides = {", 1)[1].split("}", 1)[0]
+        forwarded = {
+            line.split('"')[1]
+            for line in block.splitlines()
+            if line.strip().startswith('"')
+        }
+
+        tree = ast.parse(source)
+        main = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "main"
+        )
+        args = main.args
+        defaults = dict(
+            zip([a.arg for a in args.args][-len(args.defaults) :], args.defaults)
+        )
+        defaults.update(zip([a.arg for a in args.kwonlyargs], args.kw_defaults))
+
+        offenders = []
+        for name in sorted(forwarded):
+            node = defaults.get(name)
+            if node is None:
+                continue
+            # typer.Option(<default>, ...) -- the default is the first argument.
+            if isinstance(node, ast.Call) and node.args:
+                literal = node.args[0]
+                if not (isinstance(literal, ast.Constant) and literal.value is None):
+                    offenders.append((name, ast.unparse(literal)))
+
+        self.assertEqual(
+            offenders,
+            [],
+            f"forwarded CLI options with a non-None default: {offenders}. "
+            f"They override every model's kt_config value on every run.",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

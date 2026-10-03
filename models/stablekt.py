@@ -1,3 +1,10 @@
+"""StableKT adapted from pykt-team/pykt-toolkit (audited 2026-10-03).
+
+Local correctness changes: explicit multi-concept pooling, tensor-local devices,
+and an explicit ``find('wha') != -1`` absolute-position gate. The corrected qid
+arm omits the accidental absolute encoding present in the upstream condition.
+"""
+
 import torch
 from torch import nn
 from torch.nn.init import xavier_uniform_
@@ -111,9 +118,7 @@ class stableKT(nn.Module):
         return pad_attn_mask.repeat(self.nhead, 1, 1)
 
     def forward(self, dcur, qtest=False, train=False):
-        global device
         q, c, r = dcur["qseqs"].long(), dcur["cseqs"].long(), dcur["rseqs"].long()
-        device = q.device
         qshft, cshft, rshft = dcur["shft_qseqs"].long(), dcur["shft_cseqs"].long(), dcur["shft_rseqs"].long()
         dev = q.device
         pid_data = torch.cat((q[:,0:1], qshft), dim=1).to(dev)
@@ -195,7 +200,7 @@ class Architecture(nn.Module):
         # target shape  bs, seqlen
         seqlen, batch_size = q_embed_data.size(1), q_embed_data.size(0)
 
-        if self.emb_type.find("sin") != -1 or self.emb_type.find("wha"):
+        if self.emb_type.find("sin") != -1 or self.emb_type.find("wha") != -1:
             q_posemb = self.position_emb(q_embed_data)
             q_embed_data = q_embed_data + q_posemb
             qa_posemb = self.position_emb(qa_embed_data)
@@ -258,7 +263,7 @@ class TransformerLayer(nn.Module):
         seqlen, batch_size = query.size(1), query.size(0)
         nopeek_mask = np.triu(
             np.ones((1, 1, seqlen, seqlen)), k=mask).astype('uint8')
-        src_mask = (torch.from_numpy(nopeek_mask) == 0).to(device)
+        src_mask = (torch.from_numpy(nopeek_mask) == 0).to(query.device)
         if mask == 0:  # If 0, zero-padding is needed.
             # Calls block.masked_attn_head.forward() method
             query2 = self.masked_attn_head(
@@ -661,6 +666,12 @@ class StableKT(stableKT):
         dataset_mode = "all_in_one"
         requires_question_ids = True
         needs_num_pid = True
+
+        @classmethod
+        def prepare(cls, ctx):
+            inputs = super().prepare(ctx)
+            inputs.run_config_extras["model_correctness_revision"] = "2026-10-03"
+            return inputs
 
     def __init__(
         self,

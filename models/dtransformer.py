@@ -1,3 +1,11 @@
+"""DTransformer adapted from pykt-team/pykt-toolkit (audited 2026-10-03).
+
+Local correctness repairs: multi-concept pooling; explicit validity masks for
+lengths, augmentation and regularization; cloned tensor swaps; and inclusion of
+masked multi-step prediction loss in the qid_cl training objective. Padded
+responses are zero in this framework and cannot be used to infer validity.
+"""
+
 import torch
 import random
 from torch import nn
@@ -151,8 +159,27 @@ class DTransformer(nn.Module):
             qa_embed_data = self.s_embed(target)+q_embed_data
         return q_embed_data, qa_embed_data
     
-    def embedding(self,  q_data, target, pid_data=None):
-        lens = (target >= 0).sum(dim=1)
+    @staticmethod
+    def _validity(target, valid_mask=None):
+        # Without padding metadata a direct caller supplies an unpadded sequence.
+        if valid_mask is None:
+            return torch.ones_like(target, dtype=torch.bool)
+        valid_mask = valid_mask.to(device=target.device, dtype=torch.bool)
+        if valid_mask.shape != target.shape:
+            raise ValueError("DTransformer valid_mask must match responses [B,T].")
+        if (valid_mask[:, 1:] & ~valid_mask[:, :-1]).any():
+            raise ValueError("DTransformer requires right-padded sequences.")
+        return valid_mask
+
+    def embedding(self, q_data, target, pid_data=None, valid_mask=None):
+        valid_mask = self._validity(target, valid_mask)
+        lens = valid_mask.sum(dim=1)
+        target = target.masked_fill(~valid_mask, 0)
+        q_data = q_data.masked_fill(
+            ~valid_mask.unsqueeze(-1) if q_data.dim() == 3 else ~valid_mask, 0
+        )
+        if pid_data is not None:
+            pid_data = pid_data.masked_fill(~valid_mask, 0)
         if self.emb_type.startswith("qid"):
             q_embed_data, qa_embed_data = self.base_emb(q_data, target)
 
@@ -189,7 +216,7 @@ class DTransformer(nn.Module):
         alpha = torch.softmax(beta, -1)
         return torch.matmul(alpha, value).view(bs, seqlen, -1)  # (bs, seqlen, -1)
 
-    def predict(self, q, s, pid=None, n=1):
+    def predict(self, q, s, pid=None, n=1, valid_mask=None):
         # 判断张量是否为空
         if pid is None:
             pass
@@ -200,7 +227,7 @@ class DTransformer(nn.Module):
             else:
                 pass
         
-        q_emb, s_emb, lens, p_diff = self.embedding(q, s, pid)
+        q_emb, s_emb, lens, p_diff = self.embedding(q, s, pid, valid_mask)
         # print(f"q_emb {q_emb.shape} q_emb {q_emb.shape} lens:{len}")
         z, q_scores, k_scores = self(q_emb, s_emb, lens)
         # print(f"z {z.shape} q_scores {q_scores.shape} k_scores:{k_scores.shape}")
@@ -221,12 +248,15 @@ class DTransformer(nn.Module):
         # print(f"yshape:{y.size()}")
        
         if pid is not None:
-            return output, concat_q, z, q_emb, (p_diff**2).mean() * 1e-3, (q_scores, k_scores)
+            valid = self._validity(s, valid_mask)
+            reg_loss = ((p_diff[valid] ** 2).mean() * 1e-3
+                        if valid.any() else p_diff.sum() * 0.0)
+            return output, concat_q, z, q_emb, reg_loss, (q_scores, k_scores)
         else:
             return output, concat_q, z, q_emb, 0.0, (q_scores, k_scores)
 
 
-    def get_loss(self, q, s, pids=None, q_cl=False):
+    def get_loss(self, q, s, pids=None, q_cl=False, valid_mask=None):
         global device
         device = q.device
         pid = pids
@@ -236,19 +266,38 @@ class DTransformer(nn.Module):
         s = s.to(device)
         if pid is not None:
             pid = pid.to(device)
-        output, concat_q, _, _, reg_loss, _ = self.predict(q, s, pid)
+        valid_mask = self._validity(s, valid_mask)
+        output, concat_q, _, _, reg_loss, _ = self.predict(q, s, pid, valid_mask=valid_mask)
         m = nn.Sigmoid()
         preds = m(output)
         if q_cl:
-            masked_labels = s[s>=0].float()
-            masked_logits = output[s>=0]
+            masked_labels = s[valid_mask].float()
+            masked_logits = output[valid_mask]
             return (
             F.binary_cross_entropy_with_logits(masked_logits, masked_labels, reduction="mean")+ reg_loss 
             )
         else:
             return preds, reg_loss
 
-    def get_cl_loss(self, q, s, pid=None):
+    def _window_loss(self, z, q_emb, s, valid_mask, score_mask):
+        # z at t is read against question t+i; only real, scored targets enter BCE.
+        loss = z.sum() * 0.0
+        if self.shortcut and self.window > 1:
+            raise ValueError("DTransformer shortcut supports window=1 only.")
+        for i in range(1, min(self.window, s.size(1))):
+            selected = (valid_mask[:, :-i] & valid_mask[:, i:]
+                        & score_mask[:, i:])
+            if not selected.any():
+                continue
+            query = q_emb[:, i:, :]
+            h = self.readout(z[:, :query.size(1), :], query)
+            logits = self.out(torch.cat([query, h], dim=-1)).squeeze(-1)
+            loss = loss + F.binary_cross_entropy_with_logits(
+                logits[selected], s[:, i:][selected].float()
+            )
+        return loss
+
+    def get_cl_loss(self, q, s, pid=None, valid_mask=None, score_mask=None):
         global device
         device = q.device
         bs = s.size(0)
@@ -262,10 +311,22 @@ class DTransformer(nn.Module):
             pid = pid.to(device)
 
         # skip CL for batches that are too short
-        lens = (s >= 0).sum(dim=1)
+        valid_mask = self._validity(s, valid_mask)
+        if score_mask is None:
+            score_mask = valid_mask
+        else:
+            score_mask = score_mask.to(device=s.device, dtype=torch.bool)
+            if score_mask.shape != s.shape or (score_mask & ~valid_mask).any():
+                raise ValueError("DTransformer score_mask must select valid [B,T] positions.")
+        lens = valid_mask.sum(dim=1)
         minlen = lens.min().item()
         if minlen < MIN_SEQ_LEN:
-            return self.get_loss(q, s, pid)
+            logits, _, z, q_emb, reg_loss, _ = self.predict(
+                q, s, pid, valid_mask=valid_mask
+            )
+            return torch.sigmoid(logits), reg_loss + self._window_loss(
+                z, q_emb, s, valid_mask, score_mask
+            )
 
         # augmentation
         q_ = q.clone()
@@ -283,10 +344,10 @@ class DTransformer(nn.Module):
                 range(cur_len - 1), max(1, int(cur_len * self.dropout_rate))
             )
             for i in idx:
-                q_[b, i], q_[b, i + 1] = q_[b, i + 1], q_[b, i]
-                s_[b, i], s_[b, i + 1] = s_[b, i + 1], s_[b, i]
+                q_[b, i], q_[b, i + 1] = q_[b, i + 1].clone(), q_[b, i].clone()
+                s_[b, i], s_[b, i + 1] = s_[b, i + 1].clone(), s_[b, i].clone()
                 if pid_ is not None:
-                    pid_[b, i], pid_[b, i + 1] = pid_[b, i + 1], pid_[b, i]
+                    pid_[b, i], pid_[b, i + 1] = pid_[b, i + 1].clone(), pid_[b, i].clone()
 
         # hard negative
         s_flip = s.clone() if self.hard_neg else s_
@@ -303,15 +364,17 @@ class DTransformer(nn.Module):
 
     #     # model
         # logits, z_1, q_emb, reg_loss, _ = self.predict(q, s, pid)  #预测模型
-        logits, concat_q, z_1, q_emb, reg_loss, _ = self.predict(q, s, pid)
+        logits, concat_q, z_1, q_emb, reg_loss, _ = self.predict(
+            q, s, pid, valid_mask=valid_mask
+        )
         # masked_logits = logits[s >= 0]
 
         # extract forward
         # print(f"q_ shape:{q_.shape} s_ shape:{s_.shape}")
-        _, _,  z_2, *_ = self.predict(q_, s_, pid_)
+        _, _, z_2, *_ = self.predict(q_, s_, pid_, valid_mask=valid_mask)
 
         if self.hard_neg:
-           _, _, z_3, *_ = self.predict(q, s_flip, pid)
+           _, _, z_3, *_ = self.predict(q, s_flip, pid, valid_mask=valid_mask)
 
         # CL loss
         # print(f"z1 shape:{z_1.shape} z2 shape:{z_2.shape}")
@@ -333,22 +396,12 @@ class DTransformer(nn.Module):
         # pred_loss = F.binary_cross_entropy_with_logits(
         #     masked_logits, masked_labels, reduction="mean"
         # )
-        pred_loss = torch.zeros((), device=q.device)
-
-        for i in range(1, self.window):
-            label = s[:, i:]
-            query = q_emb[:, i:, :]
-            h = self.readout(z_1[:, : query.size(1), :], query)
-            y = self.out(torch.cat([query, h], dim=-1)).squeeze(-1)
-
-            pred_loss += F.binary_cross_entropy_with_logits(
-                y[label >= 0], label[label >= 0].float()
-            )
+        pred_loss = self._window_loss(z_1, q_emb, s, valid_mask, score_mask)
 
         m = nn.Sigmoid()
         preds = m(logits)
 
-        return preds, cl_loss * self.lambda_cl + reg_loss
+        return preds, pred_loss + cl_loss * self.lambda_cl + reg_loss
 
     def sim(self, z1, z2):
         bs, seqlen, _ = z1.size()
@@ -504,6 +557,12 @@ class DTransformerModel(DTransformer):
         dataset_mode = "all_in_one"
         requires_question_ids = True
         needs_num_pid = True
+
+        @classmethod
+        def prepare(cls, ctx):
+            inputs = super().prepare(ctx)
+            inputs.run_config_extras["model_correctness_revision"] = "2026-10-03"
+            return inputs
 
     def __init__(
         self,

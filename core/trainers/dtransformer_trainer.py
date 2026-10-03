@@ -58,11 +58,22 @@ class DTransformerTrainer(BaseTrainer):
             raise ValueError("DTransformer requires question, concept, and response sequences.")
 
         rshft = batch["shft_rseqs"].to(self.device).float()
-        sm = batch["smasks"].to(self.device)
+        sm = batch["smasks"].to(self.device).bool()
+        masks = batch["masks"].to(self.device).bool()
+        # Full [B,T] context validity and supervision remain separate.
+        valid_mask = torch.cat((masks[:, :1], masks), dim=1)
+        score_mask = torch.cat((torch.zeros_like(sm[:, :1]), sm), dim=1)
+        if (score_mask & ~valid_mask).any():
+            raise ValueError("DTransformer smasks select invalid sequence positions.")
         if train and getattr(self.model, "emb_type", "") == "qid_cl":
-            preds, reg_loss = self.model.get_cl_loss(c_full.long(), r_full.long(), q_full.long())
+            preds, reg_loss = self.model.get_cl_loss(
+                c_full.long(), r_full.long(), q_full.long(),
+                valid_mask=valid_mask, score_mask=score_mask,
+            )
         else:
-            preds, reg_loss = self.model.get_loss(c_full.long(), r_full.long(), q_full.long())
+            preds, reg_loss = self.model.get_loss(
+                c_full.long(), r_full.long(), q_full.long(), valid_mask=valid_mask,
+            )
         y = _align_shifted_preds(preds, rshft)
         loss = _masked_bce(y, rshft, sm, reg_loss)
         pred = torch.masked_select(y, sm)
@@ -92,7 +103,7 @@ def _align_shifted_preds(preds, target):
 def _masked_bce(preds, target, mask, extra_loss=None):
     y = torch.masked_select(preds.double(), mask)
     t = torch.masked_select(target.double(), mask)
-    loss = binary_cross_entropy(y, t)
+    loss = binary_cross_entropy(y, t) if y.numel() else preds.sum() * 0.0
     if extra_loss is not None:
         loss = loss + extra_loss
     return loss

@@ -20,12 +20,12 @@
     "emb_size": 200,
     "dropout": 0.1,
     "num_layers": 1,
-    "num_attn_heads": 5,
-    "l1": 0.5,
+    "num_attn_heads": 8,
+    "l1": 1,
     "l2": 0.5,
     "l3": 0.5,
     "start": 50,
-    "emb_type": "qid"
+    "emb_type": "qiddelxembhistranscembpredcurc"
   },
   "atkt": {
     "learning_rate": 0.001,
@@ -524,6 +524,24 @@
     "separate_qa": false,
     "emb_type": "qid"
   },
+  "simplekt_delta": {
+    "dataset_mode": "all_in_one",
+    "learning_rate": 0.001,
+    "emb_size": 256,
+    "num_blocks": 2,
+    "num_attn_heads": 8,
+    "dropout": 0.1,
+    "d_ff": 256,
+    "final_fc_dim": 512,
+    "final_fc_dim2": 256,
+    "kq_same": 1,
+    "separate_qa": false,
+    "emb_type": "qid_shrunkvec_gru",
+    "memory_rule": "delta",
+    "memory_dim": 32,
+    "memory_rate": 0.1,
+    "residual_detach": true
+  },
   "skvmn": {
     "learning_rate": 0.001,
     "dim_s": 200,
@@ -576,5 +594,36 @@
     "use_uncertainty_aug": true,
     "atten_type": "w2",
     "emb_type": "stoc_qid"
+  },
+  "fokt": {
+    "dataset_mode": "all_in_one",
+    "learning_rate": 0.001,
+    "d_model": 256,
+    "n_blocks": 2,
+    "dropout": 0.05,
+    "d_ff": 256,
+    "num_attn_heads": 8,
+    "emb_type": "qid_fox"
+  },
+  "cgmkt": {
+    "learning_rate": 0.001,
+    "emb_size": 256,
+    "dropout": 0.3,
+    "dropout_qk": 0.05,
+    "dropout_kk": 0.4,
+    "num_clusters": 9,
+    "num_gcn_layers": 1,
+    "mastery_update_hidden": 64,
+    "mastery_step": 0.1,
+    "mastery_bound": 5.0,
+    "modulation_type": "gate",
+    "spread_type": "sbm",
+    "spread_rate_init": 0.1,
+    "spread_rate_max": 1.0,
+    "question_graph_source": "incidence",
+    "kc_graph_source": "sbm_random",
+    "group_source": "spectral",
+    "graph_seed": 3407,
+    "emb_type": "qid"
   }
 }

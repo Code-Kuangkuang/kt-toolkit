@@ -8,6 +8,8 @@ from .label_noise import apply_train_label_flip
 
 
 ALL_IN_ONE_DATASET_MODELS = {
+    "simplekt_delta",
+    "fokt",
     "lpkt",
     "hdkt",
     "hd_dkt",
@@ -40,9 +42,15 @@ ALL_IN_ONE_DATASET_MODELS = {
     "hqaf_kt",
     "keenkt",
     "dgekt",
+    # Question-level: its question branch indexes a [num_q, d] table through a
+    # graph, and its group readout needs every concept of a question, not the
+    # first one.
+    "cgmkt",
 }
 ONE_BY_ONE_DATASET_MODELS = {"hawkes"}
 MULTI_CONCEPT_MODELS = {
+    "simplekt_delta",
+    "fokt",
     "dkt",
     "sakt",
     "akt",
@@ -76,6 +84,7 @@ MULTI_CONCEPT_MODELS = {
     "dkt_pebg",
     "hqaf",
     "keenkt",
+    "cgmkt",
     "ukt",
     "kqn",
     "hd_dkt",

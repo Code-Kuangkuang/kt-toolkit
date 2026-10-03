@@ -60,7 +60,7 @@ def build_question_graph(dpath: str, num_q: int):
     if not os.path.exists(qmatrix_path):
         raise FileNotFoundError(
             f"DenoiseKT builds its question graph from {qmatrix_path}, which is "
-            f"missing. Regenerate the dataset with scripts/run_clean.py."
+            f"missing. Build it with `python scripts/build_qmatrix.py --dataset-name <dataset>`."
         )
 
     cache = os.path.join(dpath, f"denoisekt_qgraph_{_fingerprint(qmatrix_path)}.npz")
@@ -111,21 +111,87 @@ def build_question_concept_map(dpath: str, num_q: int, max_concepts: int):
     qmatrix_path = os.path.join(dpath, "qmatrix.npz")
     qmatrix = np.load(qmatrix_path)["matrix"][:num_q] > 0
 
-    concept_map = np.full((num_q, max_concepts), -1, dtype=np.int64)
+    # Width is the larger of `max_concepts` and the widest row actually in the
+    # Q-matrix. They measure different things: keyid2idx.json's `max_concepts`
+    # is concepts per *answer position*, the Q-matrix row is concepts per
+    # *question over all its occurrences*. Where a question always carries the
+    # same concept set they coincide, which is why assist2009 (4) and
+    # algebra2005 (7) never tripped this. assist2017 does not: every one of its
+    # 942,785 positions carries exactly one concept, so max_concepts=1, but 682
+    # questions are tagged with two different concepts across occurrences and 15
+    # with three (question 1297 is concept 7 in some rows and 40 in others).
+    # The Q-matrix -- and LPKT's own generator before it -- takes the union.
+    #
+    # Sizing by the max keeps every dataset that already worked byte-identical
+    # (its width stays `max_concepts`) and only widens the one that raised.
+    width = max(int(max_concepts), int(qmatrix.sum(axis=1).max()) if qmatrix.size else 0)
+    concept_map = np.full((num_q, width), -1, dtype=np.int64)
     rows, cols = np.nonzero(qmatrix)
     # np.nonzero yields rows in ascending order, so the running position within
     # each row is just the offset from where that row's block starts.
     starts = np.searchsorted(rows, np.arange(num_q))
     slots = np.arange(len(rows)) - starts[rows]
-    keep = slots < max_concepts
-    if not keep.all():
-        raise ValueError(
-            f"{int((~keep).sum())} question-concept pairs do not fit in "
-            f"max_concepts={max_concepts}; the Q-matrix has a question with more "
-            f"concepts than keyid2idx.json records."
-        )
-    concept_map[rows[keep], slots[keep]] = cols[keep]
+    concept_map[rows, slots] = cols
     return concept_map
+
+
+def load_concept_alias_map(dataset_name: str, num_c: int, root_dir: str = "."):
+    """`[num_c]` mapping each concept to the lowest concept sharing its name.
+
+    Concept ids are not one-to-one with skills. On assist2009, 20 of the 123
+    ids carry a name another id also carries -- "Choose an Equation from Given
+    Information" occupies four consecutive ids (92-95), "Table" and "Number
+    Line" three each, five more skills two each. Anything that groups by concept
+    id therefore splits eight skills across twenty groups, and two items that
+    test the same thing are treated as unrelated.
+
+    Names come from `kcs_context_<dataset>.json`, the same directory as the BGE
+    vectors, because the preprocessed data carries only ids. That file was
+    checked against `skill_builder_data_corrected_collapsed.csv` rather than
+    trusted: of the 95 ids the CSV also names, 92 match exactly and the other 3
+    differ only by trailing whitespace, which the normalisation below removes.
+    Every alias pair the CSV covers it confirms -- "Absolute Value" on both of
+    its ids, and one of the two ids for each of Ordering Integers, Unit
+    Conversion Within a System and Pythagorean Theorem.
+
+    The ten ids whose name is a random placeholder (the source CSV leaves those
+    skills unnamed) need no special handling: the placeholders are distinct
+    strings, so they never alias with anything, including each other.
+
+    This is metadata, not an outcome, and the concept ids it collapses are
+    already handed to every model through `cseqs`. Nothing about a test split
+    enters here.
+    """
+    import json
+
+    path = os.path.join(
+        root_dir, "utils", "kc_embedding", f"kcs_context_{dataset_name}.json"
+    )
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"Alias merging needs concept names at {path}. They are not in the "
+            f"preprocessed data, which carries ids only. The file ships beside "
+            f"kc_embeddings_<dataset>_bge.npy; see load_kc_text_embeddings."
+        )
+    with open(path, encoding="utf-8") as handle:
+        raw = json.load(handle)
+
+    import numpy as np
+
+    canonical = np.arange(num_c, dtype=np.int64)
+    first_seen = {}
+    for key, value in raw.items():
+        index = int(key)
+        if not 0 <= index < num_c:
+            continue
+        # Stored as "<name>_<index>", so the suffix has to come off before two
+        # ids can be compared; casefold and strip absorb the whitespace-only
+        # disagreements with the CSV.
+        name = str(value).rsplit("_", 1)[0].strip().casefold()
+        if not name:
+            continue
+        canonical[index] = first_seen.setdefault(name, index)
+    return canonical
 
 
 def load_kc_text_embeddings(dataset_name: str, num_c: int, root_dir: str = "."):
