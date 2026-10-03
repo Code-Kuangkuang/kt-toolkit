@@ -5,7 +5,6 @@ import subprocess
 import sys
 import threading
 import uuid
-from collections import deque
 from datetime import datetime
 from pathlib import Path
 
@@ -55,7 +54,10 @@ class JobRunner:
         self.root = Path(root)
         self.store = JobStore(db_path or os.environ.get("KT_WEBUI_DB") or DEFAULT_DB)
         self._processes = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._gpu_slots = {}
+        self._metrics_cache = {}
+        self._metrics_lock = threading.Lock()
 
     @staticmethod
     def now():
@@ -96,6 +98,14 @@ class JobRunner:
         if model_name not in cfg["models"]:
             raise ValueError(f"Unknown model: {model_name}")
 
+        request = dict(request)
+        if request.get("cv_run_dir"):
+            cv_path = resolve_within_allowed_roots(request["cv_run_dir"], None, "cv_run_dir")
+            if not cv_path.is_dir():
+                raise ValueError("cv_run_dir must be an existing directory.")
+            if not request.get("cv"):
+                raise ValueError("cv_run_dir requires cv=true.")
+            request["cv_run_dir"] = str(cv_path)
         job_id = uuid.uuid4().hex[:12]
         save_base = resolve_within_allowed_roots(
             request.get("save_dir"), DEFAULT_SAVE_BASE, "save_dir"
@@ -138,19 +148,24 @@ class JobRunner:
         model_cfg = kt_cfg.setdefault(model_name, {})
         train_cfg = kt_cfg.setdefault("train_config", {})
 
-        for key in ("batch_size", "num_epochs"):
+        for key in ("batch_size", "num_epochs", "num_workers", "pin_memory", "persistent_workers", "prefetch_factor", "max_grad_norm"):
             value = request.get(key)
             if value is not None and value != "":
                 train_cfg[key] = value
 
-        model_overrides = request.get("model_config") or {}
+        model_overrides = dict(request.get("model_config") or {})
+        for key in ("learning_rate", "emb_size", "dropout", "emb_type"):
+            if request.get(key) is not None:
+                model_overrides[key] = request[key]
+        from core.config_schema import validate_model_overrides
+        validate_model_overrides(model_name, model_overrides, model_cfg)
         for key, value in model_overrides.items():
             if value is not None and value != "":
                 model_cfg[key] = value
 
         config_path = Path(run_dir) / "kt_config.webui.json"
-        with config_path.open("w", encoding="utf-8") as f:
-            json.dump(kt_cfg, f, indent=2, ensure_ascii=True)
+        from core.run_support import save_run_config
+        save_run_config(str(config_path), kt_cfg)
         return config_path
 
     def _build_command(self, request, run_dir):
@@ -183,80 +198,77 @@ class JobRunner:
 
     def _run_job(self, job_id):
         job = self.store.get_job(job_id)
-        if job is None:
+        if job is None or job["status"] != "queued":
             return
-        if job["status"] != "queued":
-            return
-        log_path = Path(job["log_path"])
-        env = os.environ.copy()
-        env["PYTHONUNBUFFERED"] = "1"
-        env["PYTHONIOENCODING"] = "utf-8"
-        env["PYTHONUTF8"] = "1"
+        with self._lock:
+            slot = self._gpu_slots.setdefault(job["gpu"], threading.BoundedSemaphore(1))
+        while not slot.acquire(timeout=0.5):
+            job = self.store.get_job(job_id)
+            if job is None or job["status"] != "queued":
+                return
         try:
-            with log_path.open("a", encoding="utf-8", errors="replace") as log_file:
-                log_file.write(f"[webui] starting job {job_id}\n")
-                log_file.write("[webui] command: " + " ".join(job["command"]) + "\n")
-                log_file.flush()
-                creationflags = 0
-                if os.name == "nt":
-                    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-                proc = subprocess.Popen(
-                    job["command"],
-                    cwd=str(self.root),
-                    stdout=log_file,
-                    stderr=subprocess.STDOUT,
-                    env=env,
-                    creationflags=creationflags,
-                )
-                with self._lock:
-                    self._processes[job_id] = proc
-                self.store.update_job(
-                    job_id,
-                    status="running",
-                    started_at=self.now(),
-                    pid=proc.pid,
-                )
-                return_code = proc.wait()
-                status = "finished" if return_code == 0 else "failed"
-                self.store.update_job(
-                    job_id,
-                    status=status,
-                    finished_at=self.now(),
-                    return_code=return_code,
-                )
+            current = self.store.get_job(job_id)
+            if current is not None and current["status"] == "queued":
+                self._execute_job(job_id)
+        finally:
+            slot.release()
+
+    def _execute_job(self, job_id):
+        proc = None
+        try:
+            with self._lock:
+                job = self.store.get_job(job_id)
+                if job is None or job["status"] != "queued":
+                    return
+                env = os.environ.copy()
+                env.update(PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
+                with Path(job["log_path"]).open("a", encoding="utf-8", errors="replace") as log_file:
+                    log_file.write(f"[webui] starting job {job_id}\n")
+                    log_file.write("[webui] command: " + " ".join(job["command"]) + "\n")
+                    log_file.flush()
+                    flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
+                    proc = subprocess.Popen(job["command"], cwd=str(self.root), stdout=log_file,
+                                            stderr=subprocess.STDOUT, env=env, creationflags=flags)
+                    # A cancel may have arrived during process creation.
+                    current = self.store.get_job(job_id)
+                    if current is None or current["status"] != "queued":
+                        proc.terminate()
+                    else:
+                        self._processes[job_id] = proc
+                        self.store.update_job(job_id, status="running", started_at=self.now(), pid=proc.pid)
+            return_code = proc.wait()
+            with self._lock:
+                current = self.store.get_job(job_id)
+                if current is not None and current["status"] == "running":
+                    self.store.update_job(job_id, status="finished" if return_code == 0 else "failed",
+                                          finished_at=self.now(), return_code=return_code)
         except Exception as exc:
-            self.store.update_job(
-                job_id,
-                status="failed",
-                finished_at=self.now(),
-                error_message=str(exc),
-            )
+            with self._lock:
+                current = self.store.get_job(job_id)
+                if current is not None and current["status"] in {"queued", "running"}:
+                    self.store.update_job(job_id, status="failed", finished_at=self.now(), error_message=str(exc))
         finally:
             with self._lock:
                 self._processes.pop(job_id, None)
 
     def stop_job(self, job_id):
-        job = self.store.get_job(job_id)
-        if job is None:
-            return None
-        if job["status"] not in {"queued", "running"}:
-            return job
         with self._lock:
+            job = self.store.get_job(job_id)
+            if job is None or job["status"] not in {"queued", "running"}:
+                return job
             proc = self._processes.get(job_id)
+            stopped = self.store.update_job(job_id, status="stopped", finished_at=self.now(),
+                                             error_message="Stopped by user")
         if proc is not None and proc.poll() is None:
             proc.terminate()
             try:
                 proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 proc.kill()
+                proc.wait(timeout=10)
         elif job.get("pid"):
             self._terminate_pid(job["pid"])
-        return self.store.update_job(
-            job_id,
-            status="stopped",
-            finished_at=self.now(),
-            error_message="Stopped by user",
-        )
+        return stopped
 
     def delete_job(self, job_id):
         job = self.store.get_job(job_id)
@@ -328,11 +340,21 @@ class JobRunner:
         path = Path(job["log_path"])
         if not path.exists():
             return ""
-        items = deque(maxlen=max(1, min(int(lines), 5000)))
-        with path.open("r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                items.append(line)
-        return self._collapse_carriage_returns("".join(items))
+        count = max(1, min(int(lines), 5000))
+        chunks = []
+        newlines = 0
+        with path.open("rb") as stream:
+            stream.seek(0, 2)
+            position = stream.tell()
+            while position > 0 and newlines <= count:
+                size = min(8192, position)
+                position -= size
+                stream.seek(position)
+                chunk = stream.read(size)
+                chunks.append(chunk)
+                newlines += chunk.count(b"\n")
+        text = b"".join(reversed(chunks)).decode("utf-8", errors="replace")
+        return self._collapse_carriage_returns("\n".join(text.splitlines()[-count:]))
 
     @staticmethod
     def _collapse_carriage_returns(text):
@@ -357,16 +379,26 @@ class JobRunner:
         save_dir = self._job_artifact_root(job)
         runs = []
         for metrics_path in sorted(save_dir.rglob("metrics.jsonl")):
-            metrics = []
-            with metrics_path.open("r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        metrics.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        continue
+            with self._metrics_lock:
+                stat = metrics_path.stat()
+                key = str(metrics_path)
+                entry = self._metrics_cache.get(key)
+                if entry is None or stat.st_size < entry["offset"] or (stat.st_size == entry["offset"] and stat.st_mtime_ns != entry["mtime"]):
+                    entry = {"offset": 0, "mtime": None, "rows": []}
+                    self._metrics_cache[key] = entry
+                with metrics_path.open("rb") as stream:
+                    stream.seek(entry["offset"])
+                    while True:
+                        start = stream.tell()
+                        line = stream.readline()
+                        if not line or not line.endswith(b"\n"):
+                            stream.seek(start)
+                            break
+                        if line.strip():
+                            entry["rows"].append(json.loads(line.decode("utf-8")))
+                    entry["offset"] = stream.tell()
+                    entry["mtime"] = stat.st_mtime_ns
+                metrics = list(entry["rows"])
             run_dir = metrics_path.parent
             best_metrics = None
             best_path = run_dir / "best_metrics.json"

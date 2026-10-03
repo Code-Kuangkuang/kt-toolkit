@@ -7,7 +7,6 @@ compares whole concept sets between positions and `get_avg_skill_emb` averages
 over them -- which is why "denoisekt" is in MULTI_CONCEPT_MODELS.
 """
 
-import numpy as np
 import torch
 from torch.nn.functional import binary_cross_entropy
 
@@ -39,25 +38,7 @@ class DenoiseKTTrainer(BaseTrainer):
         self.metric_key = metric_key
         self.patience = patience
 
-    def _train_epoch(self, epoch):
-        self.model.train()
-        losses = []
-        total_batches = len(self.train_loader)
-
-        print(f"\n== Epoch {epoch}/{self.num_epochs} ==")
-        print("=" * 50)
-
-        for batch_idx, batch in enumerate(self.train_loader):
-            pred, target, loss = self._forward_batch(batch, train=True)
-            if pred.numel() == 0:
-                continue
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
-            losses.append(loss.item())
-            self._print_progress(batch_idx, total_batches, loss.item())
-
-        return float(np.mean(losses)) if losses else 0.0
+    training_forward_kwargs = {'train': True}
 
     def _forward_batch(self, batch, train=False):
         cq = _full_sequence(batch, "qseqs", "shft_qseqs", self.device)

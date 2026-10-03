@@ -129,11 +129,24 @@ class ProtocolKeyTest(unittest.TestCase):
 class GktSpecScopeTest(unittest.TestCase):
     """GKT reports its own scope, the same way it reports its graph."""
 
+    def setUp(self):
+        import tempfile
+        import pandas as pd
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dataset_cfg = dict(DATA_CONFIG["assist2009"], dpath=self._tmp.name, num_c=3)
+        train = pd.DataFrame({"fold": [0, 1], "uid": [1, 2], "concepts": ["0,1,2", "2,1,0"], "responses": ["0,1,0", "1,0,1"]})
+        test = train.iloc[:1].assign(fold=-1)
+        for key in ("train_valid_file", "train_valid_original_file"):
+            train.to_csv(Path(self._tmp.name) / self.dataset_cfg[key], index=False)
+        for key in ("test_file", "test_original_file"):
+            test.to_csv(Path(self._tmp.name) / self.dataset_cfg[key], index=False)
+
     def _prepare(self, graph_type, transductive=False):
         from tests.test_model_contracts import _MinimalContext
 
         ctx = _MinimalContext("gkt", "all_in_one")
-        ctx.dataset_cfg = dict(DATA_CONFIG["assist2009"])
+        ctx.dataset_cfg = dict(self.dataset_cfg)
         ctx.model_cfg = {"graph_type": graph_type}
         ctx.train_cfg = {"pykt_transductive": transductive}
         return spec_for(MODEL_REGISTRY.get("gkt")).prepare(ctx)

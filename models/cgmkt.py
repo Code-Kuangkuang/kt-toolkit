@@ -454,6 +454,7 @@ class CGMKTModel(CGMKT):
         the training folds only. `prepare` reports whichever applies so the two
         are never averaged into one baseline row.
         """
+        supports_multi_concept = True
 
         dataset_mode = "all_in_one"
         requires_question_ids = True

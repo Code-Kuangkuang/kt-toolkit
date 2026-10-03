@@ -131,6 +131,7 @@ class LoadCompletedFoldTest(unittest.TestCase):
         }
         config.update(overrides)
         write_run(self.cv_dir, "run0", **config)
+        (self.cv_dir / "run0" / f"{config['model_name']}_qid_model.pt").write_bytes(b"fixture")
 
     def test_a_matching_run_is_reused(self):
         self._write()

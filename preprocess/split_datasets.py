@@ -5,96 +5,58 @@ import numpy as np
 import json
 import copy
 
+from core.artifacts import atomic_output
+
 ALL_KEYS = ["fold", "uid", "questions", "concepts", "responses", "timestamps",
             "usetimes", "selectmasks", "is_repeat", "qidxs", "rest", "orirow", "cidxs"]
 ONE_KEYS = ["fold", "uid"]
 
 
-def read_data(fname, min_seq_len=3, response_set=[0, 1]):
-    effective_keys = set()
-    dres = dict()
-    delstu, delnum, badr = 0, 0, 0
-    goodnum = 0
-    with open(fname, "r", encoding="utf8") as fin:
-        i = 0
-        lines = fin.readlines()
-        dcur = dict()
-        while i < len(lines):
-            line = lines[i].strip()
-            if i % 6 == 0:  # stuid
-                effective_keys.add("uid")
-                tmps = line.split(",")
-                if "(" in tmps[0]:
-                    stuid, seq_len = tmps[0].replace('(', ''), int(tmps[2])
-                else:
-                    stuid, seq_len = tmps[0], int(tmps[1])
-                if seq_len < min_seq_len:  # delete use seq len less than min_seq_len
-                    i += 6
-                    dcur = dict()
-                    delstu += 1
-                    delnum += seq_len
-                    continue
-                dcur["uid"] = stuid
-                goodnum += seq_len
-            elif i % 6 == 1:  # question ids / names
-                qs = []
-                if line.find("NA") == -1:
-                    effective_keys.add("questions")
-                    qs = line.split(",")
-                dcur["questions"] = qs
-            elif i % 6 == 2:  # concept ids / names
-                cs = []
-                if line.find("NA") == -1:
-                    effective_keys.add("concepts")
-                    cs = line.split(",")
-                dcur["concepts"] = cs
-            elif i % 6 == 3:  # responses
-                effective_keys.add("responses")
-                rs = []
-                if line.find("NA") == -1:
-                    flag = True
-                    for r in line.split(","):
-                        try:
-                            r = int(r)
-                            if r not in response_set:  # check if r in response set.
-                                print(f"error response in line: {i}")
-                                flag = False
-                                break
-                            rs.append(r)
-                        except:
-                            print(f"error response in line: {i}")
-                            flag = False
-                            break
-                    if not flag:
-                        i += 3
-                        dcur = dict()
-                        badr += 1
-                        continue
-                dcur["responses"] = rs
-            elif i % 6 == 4:  # timestamps
-                ts = []
-                if line.find("NA") == -1:
-                    effective_keys.add("timestamps")
-                    ts = line.split(",")
-                dcur["timestamps"] = ts
-            elif i % 6 == 5:  # usets
-                usets = []
-                if line.find("NA") == -1:
-                    effective_keys.add("usetimes")
-                    usets = line.split(",")
-                dcur["usetimes"] = usets
-
-                for key in effective_keys:
-                    dres.setdefault(key, [])
-                    if key != "uid":
-                        dres[key].append(",".join([str(k) for k in dcur[key]]))
-                    else:
-                        dres[key].append(dcur[key])
-                dcur = dict()
-            i += 1
-    df = pd.DataFrame(dres)
-    print(
-        f"delete bad stu num of len: {delstu}, delete interactions: {delnum}, of r: {badr}, good num: {goodnum}")
+def read_data(fname, min_seq_len=3, response_set=(0, 1)):
+    # Six lines per learner; keep only one raw learner block in memory.
+    from itertools import islice
+    rows = []
+    effective_keys = {"uid", "responses"}
+    delstu = delnum = badr = goodnum = 0
+    keys = ("questions", "concepts", "responses", "timestamps", "usetimes")
+    with open(fname, "r", encoding="utf8") as stream:
+        block_index = 0
+        while True:
+            block = list(islice(stream, 6))
+            if not block:
+                break
+            if len(block) != 6:
+                raise ValueError(f"Incomplete learner block {block_index} in {fname}")
+            header = block[0].strip().split(",")
+            uid = header[0].replace("(", "")
+            length = int(header[2] if "(" in header[0] else header[1])
+            block_index += 1
+            if length < min_seq_len:
+                delstu += 1
+                delnum += length
+                continue
+            row = {"uid": uid}
+            for key, line in zip(keys, block[1:]):
+                value = line.strip()
+                row[key] = "" if value == "NA" else value
+                if row[key]:
+                    effective_keys.add(key)
+                    if len(row[key].split(",")) != length:
+                        raise ValueError(f"Learner {uid}: {key} length differs from declared {length}.")
+            try:
+                responses = [int(v) for v in row["responses"].split(",")]
+            except ValueError:
+                badr += 1
+                continue
+            if any(value not in response_set for value in responses):
+                badr += 1
+                continue
+            rows.append(row)
+            goodnum += length
+    if not rows:
+        raise ValueError(f"No valid learners in {fname}.")
+    df = pd.DataFrame(rows)[[k for k in ("uid", *keys) if k in effective_keys]]
+    print(f"delete bad stu num of len: {delstu}, delete interactions: {delnum}, of r: {badr}, good num: {goodnum}")
     return df, effective_keys
 
 
@@ -264,7 +226,7 @@ def write_rows_stream(rows, save_keys, write_path, stats_key, stares):
     columns = ordered_save_columns(save_keys)
     stats = _init_stream_stats()
 
-    with open(write_path, "w", encoding="utf8", newline="") as fout:
+    with atomic_output(write_path, newline="") as fout:
         writer = csv.DictWriter(fout, fieldnames=columns)
         writer.writeheader()
         for row in rows:
@@ -664,6 +626,7 @@ def write_config(dataset_name, dkeyid2idx, effective_keys, configf, dpath, k=5, 
         "num_c": num_c,
         "input_type": input_type,
         "max_concepts": dkeyid2idx["max_concepts"],
+        "split_seed": 1024,
         "min_seq_len": min_seq_len,
         "maxlen": maxlen,
         "emb_path": "",
@@ -691,7 +654,7 @@ def write_config(dataset_name, dkeyid2idx, effective_keys, configf, dpath, k=5, 
             else:
                 data_config[dataset_name] = dconfig
 
-    with open(configf, "w") as fout:
+    with atomic_output(configf) as fout:
         data = json.dumps(data_config, ensure_ascii=False, indent=4)
         fout.write(data)
 
@@ -808,7 +771,7 @@ def main(dname, fname, dataset_name, configf, min_seq_len=3, maxlen=200, kfold=5
     print(f"test sequences interactions num: {ins}, select num: {ss}, qs: {qs}, cs: {cs}, seqnum: {seqnum}")
     print("="*20)
 
-    use_streaming = dataset_name == "junyi2015"
+    use_streaming = True  # Identical window protocol, bounded memory for every dataset.
     window_save_keys = list(effective_keys) + ["cidxs", "selectmasks"]
     question_save_keys = list(effective_keys) + ["selectmasks", "qidxs", "rest", "orirow"]
     flag = ("questions" in effective_keys and "concepts" in effective_keys)

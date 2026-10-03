@@ -1,115 +1,29 @@
 ---
 name: model-migration
-description: 将KT模型从pykt-toolkit迁移到kt-toolkit。当用户请求将某个模型（如qikt、dkt、akt等）从pykt-toolkit项目迁移到kt-toolkit项目时触发此skill。
+description: 将知识追踪模型从 pykt-toolkit 迁移到 KT-Toolkit，并核对输入协议、配置与测试。
 ---
 
-# 模型迁移 Skill
+# 模型迁移
 
-# Context
-当用户请求将模型从 pykt-toolkit 迁移到 kt-toolkit 时触发。
+以仓库 AGENTS.md 为准。开始前检查 git status，保留用户改动；阅读目标模型、上游 Trainer 和上游 sweep 配置。
 
-# Task
-将指定模型从 pykt-toolkit 迁移到 kt-toolkit，并创建对应的 trainer。
+1. 保留上游网络类，注册、参数改名及框架适配写在文件末尾的 adapter 子类。文件说明来源、日期、修复点与原因。
+2. adapter 声明嵌套 `Inputs(InputSpec)`，写明 `dataset_mode`、`supports_multi_concept`、题目需求和特殊构造输入。
+   Dataset 的模式集合由声明生成，不再维护另一份模型名单。
+3. 派生图、难度、时间桶和统计量通过 `Inputs.prepare(ctx)` 返回 `ModelInputs`；使用 `ctx.train_folds()` 拟合，记录
+   `feature_fit_scope` / `graph_scope`。不要在 forward 中读文件或在 runner 中增加模型名分支。
+4. Trainer 继承 BaseTrainer，通常只实现 `_forward_batch`。使用公共训练、评估和早停；特殊训练参数声明
+   `training_forward_kwargs`，只有对抗训练等确有不同的更新过程才覆盖循环。
+5. 写出张量流：`cseqs [B,T] 或 [B,T,K] -> full [B,T+1,...] -> shifted prediction/target [B,T] -> smasks [N]`。
+   padding 概念为 -1，response padding 为 0；有效位置只读 masks/smasks。预测不得使用目标答案或未来统计。
+6. 多知识点使用已有掩码池化模块；不能静默取首知识点。预测与评估须遵循 checkpoint 保存的协议。
+7. 更新 models / core.trainers 包导入及 kt_config；新增可覆盖参数登记到 core.run_support 的共享参数集合。
+   检查构造器、CLI、WebUI、配置和 optimizer 实际消费了该参数。
+8. 若 prepare 读取真实数据，给模型契约测试登记对应的合成构造参数。跑完整 pytest、注册和语法检查，
+   再做单 epoch 训练；公共组件改动还要检查 RNN、attention、多 fold 和续跑产物。
 
-## 迁移步骤
+默认 best checkpoint 与 early stopping 只看 validation。正式实验固定划分、fold、seed、预算和评价 mask；
+不同概念或特征拟合协议不得合并。训练恢复 checkpoint 与 best-validation 权重分开保存。
 
-### 0. 分析源模型
-- 读取 `pykt-toolkit/pykt/models/{model_name}.py` 源文件
-- 理解模型的网络结构、参数、forward逻辑
-- 识别模型依赖的基类（如 QueBaseModel）
-- 查看是否有对应的配置文件（如 yaml）
-
-### 1. 创建 Model 文件
-在 `kt-toolkit/models/{model_name}.py` 中：
-
-1. **注册模型**：使用 `@MODEL_REGISTRY.register("{model_name}")`
-2. **保留核心结构**：
-   - Embedding层
-   - 核心网络层（LSTM/Transformer/Attention等）
-   - 输出层
-3. **简化继承**：直接继承 `nn.Module`，不使用 pykt 的 QueBaseModel
-4. **适配kt-toolkit风格**：
-   - 使用统一的参数命名（num_c, num_q, emb_size, dropout等）
-   - 保持与现有模型（如AKT、SAKT）一致的接口
-
-### 2. 创建 Trainer 文件
-在 `kt-toolkit/core/trainers/{model_name}_trainer.py` 中：
-
-1. **注册Trainer**：使用 `@TRAINER_REGISTRY.register("{model_name}")`
-2. **继承BaseTrainer**：参考现有trainer（AKTTrainer、SAKTTrainer）
-3. **实现核心方法**：
-   - `_train_epoch`: 训练一个epoch
-   - `_eval_epoch`: 评估并返回metrics
-   - `_forward_batch`: 处理单个batch
-   - `_should_stop`: 早停逻辑
-4. **计算Loss**：使用 `binary_cross_entropy`
-5. **测试集评估**：实现 `evaluate_test()` 方法（在最佳epoch后在测试集上评估）
-
-### 3. 更新 __init__.py
-- 在 `models/__init__.py` 添加导入
-- 在 `core/trainers/__init__.py` 添加导入
-
-### 4. 注册到工厂函数
-确保 `core/factory.py` 的 build_model 和 build_trainer 能正确创建模型。
-
-### 5. 数据集配置
-- **默认ALL-in-One模式**：kt-toolkit 默认使用 `all_in_one` 模式（避免数据泄露）
-- 如需 One-by-One 模式：显式指定 `--dataset_mode one_by_one`
-- 如需要2D概念序列（ALL-in-One），确保 `data_config.json` 中有 `train_valid_file_quelevel` 和 `max_concepts` 配置
-
-## 注意事项
-- 处理数据对齐：pykt和kt-toolkit的数据格式可能略有不同
-- 保持emb_type兼容性
-- 如有特殊loss权重配置，通过other_config传递
-- 考虑是否需要QueEmb（概念嵌入层）
-- **训练后自动测试集评估**：trainer需要实现 `evaluate_test()` 方法，训练Runner会在最佳epoch后自动在测试集上评估
-
-## ONE-BY-ONE vs ALL-IN-ONE 模式
-
-### One-by-One 模式
-- 使用 `KTDataset`，概念序列为 1D `[B, T]`
-- 每个位置只有一个概念ID
-- 适用模型：DKT, SAKT, AKT, DKVMN等
-
-### ALL-in-One 模式
-- 使用 `KTQueDataset`，概念序列为 2D `[B, T, K]`
-- 每个位置最多K个概念，用`_`分隔，`-1`填充
-- 适用模型：QIKT, IEKT, QDKT等
-- 数据文件：`*_quelevel.csv`
-- **kt-toolkit默认模式**
-
-## kt-toolkit 当前默认配置
-
-| 配置项 | 默认值 | 说明 |
-|--------|--------|------|
-| dataset_mode | "all_in_one" | 默认使用2D概念序列 |
-| add_uuid | 0 | 默认不添加UUID后缀 |
-| 5折CV | 启用 | 每折训练后会在测试集上评估 |
-
-## 使用示例
-
-**用户输入**：
-```
-将qikt模型迁移到kt-toolkit
-```
-
-**执行流程**：
-1. 读取 `pykt-toolkit/pykt/models/qikt.py`
-2. 分析QIKTNet网络结构和QueEmb
-3. 在 `kt-toolkit/models/qikt.py` 创建模型
-4. 在 `kt-toolkit/core/trainers/qikt_trainer.py` 创建trainer（含evaluate_test方法）
-5. 更新 `models/__init__.py` 和 `core/trainers/__init__.py`
-6. 输出完成提示
-
-**用户输入**：
-```
-迁移dkt模型
-```
-
-**执行流程**：
-1. 读取 `pykt-toolkit/pykt/models/dkt.py`
-2. 分析DKT网络结构
-3. 在 `kt-toolkit/models/dkt.py` 创建模型
-4. 在 `kt-toolkit/core/trainers/dkt_trainer.py` 创建trainer（含evaluate_test方法）
-5. 更新相关 `__init__.py`
-6. 输出完成提示
+不要为普通模型复制 `_train_epoch`、`_eval_epoch`、`_should_stop` 或 `evaluate_test`；不要复制 WebUI 训练框架。
+不要凭猜测配置上游超参数、覆盖原始数据，或提交模型权重、缓存和研究临时文件。

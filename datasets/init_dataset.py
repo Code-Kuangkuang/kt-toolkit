@@ -7,92 +7,20 @@ from .kt_dataset import KTDataset, KTQueDataset
 from .label_noise import apply_train_label_flip
 
 
-ALL_IN_ONE_DATASET_MODELS = {
-    "simplekt_delta",
-    "fokt",
-    "lpkt",
-    "hdkt",
-    "hd_dkt",
-    "hd_akt",
-    "hd_simplekt",
-    "atdkt",
-    "dimkt",
-    "stablekt",
-    "sparsekt",
-    "robustkt",
-    # Same AKT family and the same concept pooling as robustkt; they have to
-    # share its protocol or a MoC-KT/FlucKT vs RobustKT row is not comparable.
-    "mockt",
-    "fluckt",
-    "denoisekt",
-    "hcgkt",
-    "extrakt",
-    "folibikt",
-    "cskt",
-    "mtkt",
-    "fakt",
-    "dtransformer",
-    "dkt_forget",
-    "dkt-forget",
-    "skvmn",
-    "rekt",
-    "lefokt_akt",
-    "lefokt",
-    "hqaf",
-    "hqaf_kt",
-    "keenkt",
-    "dgekt",
-    # Question-level: its question branch indexes a [num_q, d] table through a
-    # graph, and its group readout needs every concept of a question, not the
-    # first one.
-    "cgmkt",
-}
-ONE_BY_ONE_DATASET_MODELS = {"hawkes"}
-MULTI_CONCEPT_MODELS = {
-    "simplekt_delta",
-    "fokt",
-    "dkt",
-    "sakt",
-    "akt",
-    "simplekt",
-    "dkvmn",
-    "dkt+",
-    "deep_irt",
-    "stablekt",
-    "sparsekt",
-    "lefokt_akt",
-    "skvmn",
-    "atkt",
-    "robustkt",
-    "mockt",
-    "fluckt",
-    "denoisekt",
-    "hcgkt",
-    "extrakt",
-    "folibikt",
-    "cskt",
-    "mtkt",
-    "fakt",
-    "dimkt",
-    "saint",
-    "saint_plus",
-    "iekt",
-    "lpkt",
-    "atdkt",
-    "dtransformer",
-    "dkt_forget",
-    "dkt_pebg",
-    "hqaf",
-    "keenkt",
-    "cgmkt",
-    "ukt",
-    "kqn",
-    "hd_dkt",
-    "hd_akt",
-    "hd_simplekt",
-    "hdkt",
-    "qikt",
-}
+def _models_declaring(attribute, value):
+    import models  # noqa: F401 -- registration must be complete before inspection
+    from core.registry import MODEL_REGISTRY
+    from core.model_inputs import spec_for
+    from core.model_names import MODEL_NAME_ALIASES
+    names = {name for name in MODEL_REGISTRY.get_all()
+             if getattr(spec_for(MODEL_REGISTRY.get(name)), attribute, None) == value}
+    return names | {alias for alias, name in MODEL_NAME_ALIASES.items() if name in names}
+
+
+ALL_IN_ONE_DATASET_MODELS = _models_declaring("dataset_mode", "all_in_one")
+ONE_BY_ONE_DATASET_MODELS = _models_declaring("dataset_mode", "one_by_one")
+MULTI_CONCEPT_MODELS = _models_declaring("supports_multi_concept", True)
+
 
 
 def resolve_concept_mode(model_name, override=None):
@@ -177,6 +105,24 @@ def _resolve_sequence_path(cfg, primary_key, fallback_key):
     if os.path.exists(primary_path):
         return primary_path
     return os.path.join(cfg["dpath"], cfg[fallback_key])
+
+
+def _make_loader(dataset, batch_size, shuffle, num_workers, kwargs):
+    if int(num_workers) < 0:
+        raise ValueError("num_workers must be non-negative.")
+    options = dict(batch_size=batch_size, shuffle=shuffle, num_workers=int(num_workers),
+                   pin_memory=bool(kwargs.get("pin_memory", False)))
+    persistent = bool(kwargs.get("persistent_workers", False))
+    prefetch = kwargs.get("prefetch_factor")
+    if int(num_workers) == 0 and (persistent or prefetch is not None):
+        raise ValueError("persistent_workers/prefetch_factor require num_workers > 0.")
+    if num_workers:
+        options["persistent_workers"] = persistent
+        if prefetch is not None:
+            if int(prefetch) <= 0:
+                raise ValueError("prefetch_factor must be positive.")
+            options["prefetch_factor"] = int(prefetch)
+    return DataLoader(dataset, **options)
 
 
 @DATASET_REGISTRY.register("kt_default")
@@ -293,8 +239,8 @@ def build_dataloaders(dataset_name, data_config, fold, batch_size, model_name=No
         f"mask_sha256={flip_info['mask_sha256'][:12]}"
     )
 
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers)
-    valid_loader = DataLoader(valid_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    train_loader = _make_loader(train_ds, batch_size, True, num_workers, kwargs)
+    valid_loader = _make_loader(valid_ds, batch_size, False, num_workers, kwargs)
     return train_loader, valid_loader
 
 
@@ -358,5 +304,5 @@ def build_test_dataloaders(dataset_name, data_config, batch_size, model_name=Non
             dkt_forget_caps=dkt_forget_caps,
         )
 
-    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    test_loader = _make_loader(test_ds, batch_size, False, num_workers, kwargs)
     return test_loader

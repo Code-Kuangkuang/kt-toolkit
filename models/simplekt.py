@@ -239,6 +239,7 @@ class SimpleKT(nn.Module):
         `feature_fit_scope: train_folds` and cannot be put in a table beside a
         run stamped `none`.
         """
+        supports_multi_concept = True
 
         needs_num_pid = True
 

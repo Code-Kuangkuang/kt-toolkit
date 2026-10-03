@@ -1,3 +1,5 @@
+
+from core.model_inputs import InputSpec
 # coding: utf-8
 import torch
 import torch.nn as nn
@@ -25,6 +27,9 @@ class ATKT(nn.Module):
         emb_type: embedding type
         fix: whether to use fixed attention (atktfix mode)
     """
+    class Inputs(InputSpec):
+        supports_multi_concept = True
+
 
     def __init__(
         self,

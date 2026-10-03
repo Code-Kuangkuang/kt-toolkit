@@ -5,27 +5,12 @@ from core.config import load_cfg
 from core.factory import build_model
 
 
-OTHER_CONFIG_KEYS = {
-    "loss_c_all_lambda",
-    "loss_q_all_lambda",
-    "loss_c_next_lambda",
-    "loss_q_next_lambda",
-    "output_mode",
-    "output_c_all_lambda",
-    "output_c_next_lambda",
-    "output_q_all_lambda",
-    "output_q_next_lambda",
-    "emb_type",
-    "learning_rate",
-    "use_timestamps",
-    "dpath",
-    "num_at",
-    "num_it",
-    "booster_strategy",
-    "require_fold_embedding",
-    "lambda_item_difficulty",
-}
+from core.train_runner import NON_MODEL_CONFIG_KEYS, resolve_dataset_mode
+from core.model_inputs import RunContext, spec_for
+from core.model_build import prepare_model_inputs, construct_prepared_model
+from core.registry import MODEL_REGISTRY
 
+OTHER_CONFIG_KEYS = NON_MODEL_CONFIG_KEYS
 
 def build_model_structure(root, request):
     import torch
@@ -45,30 +30,32 @@ def build_model_structure(root, request):
 
     train_cfg = copy.deepcopy(kt_cfg.get("train_config", {}))
     model_cfg = copy.deepcopy(kt_cfg.get(model_name, {}))
-    model_cfg.update({k: v for k, v in (request.get("model_config") or {}).items() if v is not None and v != ""})
+    from core.config_schema import validate_model_overrides
+    overrides = request.get("model_config") or {}
+    validate_model_overrides(model_name, overrides, model_cfg)
+    model_cfg.update({k: v for k, v in overrides.items() if v is not None and v != ""})
     emb_type = request.get("emb_type") or model_cfg.get("emb_type", "qid")
     model_cfg["emb_type"] = emb_type
 
     dataset_cfg = copy.deepcopy(data_cfg[dataset_name])
-    model_kwargs = {k: v for k, v in model_cfg.items() if k not in OTHER_CONFIG_KEYS}
-
-    original_cuda_available = torch.cuda.is_available
-    torch.cuda.is_available = lambda: False
-    try:
-        model = build_model(
-            model_name,
-            num_c=dataset_cfg["num_c"],
-            num_q=dataset_cfg["num_q"],
-            emb_type=emb_type,
-            seq_len=train_cfg.get("seq_len"),
-            device="cpu",
-            dpath=dataset_cfg.get("dpath", ""),
-            num_at=model_cfg.get("num_at"),
-            num_it=model_cfg.get("num_it"),
-            **model_kwargs,
-        )
-    finally:
-        torch.cuda.is_available = original_cuda_available
+    dpath = Path(dataset_cfg.get("dpath", ""))
+    dataset_cfg["dpath"] = str(dpath if dpath.is_absolute() else root / dpath)
+    spec = spec_for(MODEL_REGISTRY.get(model_name))
+    mode = resolve_dataset_mode(model_name, train_cfg, model_cfg, spec=spec)
+    train_cfg["dataset_mode"] = model_cfg["dataset_mode"] = mode
+    def resolve_file(primary, fallback):
+        for key in (primary, fallback):
+            value = dataset_cfg.get(key)
+            if value and (Path(dataset_cfg["dpath"]) / value).is_file():
+                return value
+        return dataset_cfg.get(primary) or dataset_cfg.get(fallback)
+    ctx = RunContext(model_name, dataset_name, int(request.get("fold", 0)), mode,
+                     model_cfg, dataset_cfg, train_cfg, str(root), resolve_file)
+    # Preview must not perturb training RNGs in this process.
+    from core.checkpoint import preserve_rng
+    with preserve_rng():
+        inputs = prepare_model_inputs(ctx)
+        model = construct_prepared_model(ctx, inputs, "cpu")
     model.eval()
 
     rows = []

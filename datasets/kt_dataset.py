@@ -1,5 +1,7 @@
 import os
 import hashlib
+import tempfile
+import pickle
 from pathlib import Path
 
 import pandas as pd
@@ -34,6 +36,17 @@ def _dataset_cache_path(file_path, tag):
     digest = hashlib.sha1(digest_src.encode("utf-8")).hexdigest()
     cache_root.mkdir(parents=True, exist_ok=True)
     return cache_root / f"{path.stem}_{digest}.pkl"
+
+
+def _atomic_pickle(value, path):
+    fd, temporary = tempfile.mkstemp(dir=Path(path).parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            pickle.dump(value, stream, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def _time_maps_cache_tag(time_idx_maps):
@@ -308,7 +321,8 @@ class KTDataset(Dataset):
         folds = sorted(list(folds))
         folds_str = "_" + "_".join([str(f) for f in folds])
         cache_tag = (
-            ("ts1" if self.use_timestamps else "ts0")
+            "schema2_" + "-".join(sorted(self.input_type)) + f"_pad{self.pad_val}_"
+            + ("ts1" if self.use_timestamps else "ts0")
             + "_"
             + _time_maps_cache_tag(time_idx_maps)
             + "_"
@@ -325,13 +339,13 @@ class KTDataset(Dataset):
 
         if not os.path.exists(processed):
             self.dori = self._load_data(file_path, folds)
-            pd.to_pickle(self.dori, processed)
+            _atomic_pickle(self.dori, processed)
         else:
             self.dori = pd.read_pickle(processed)
 
         if self.use_timestamps and ("tseqs" not in self.dori or "utseqs" not in self.dori):
             self.dori = self._load_data(file_path, folds)
-            pd.to_pickle(self.dori, processed)
+            _atomic_pickle(self.dori, processed)
 
     def __len__(self):
         return len(self.dori["rseqs"])
@@ -557,7 +571,8 @@ class KTQueDataset(Dataset):
         folds = sorted(list(folds))
         folds_str = "_" + "_".join([str(f) for f in folds])
         cache_tag = (
-            ("ts1" if self.use_timestamps else "ts0")
+            "schema2_" + "-".join(sorted(self.input_type)) + f"_pad{self.pad_val}_"
+            + ("ts1" if self.use_timestamps else "ts0")
             + "_"
             + _time_maps_cache_tag(time_idx_maps)
             + "_"
@@ -577,13 +592,13 @@ class KTQueDataset(Dataset):
 
         if not os.path.exists(processed):
             self.dori = self._load_data(file_path, folds)
-            pd.to_pickle(self.dori, processed)
+            _atomic_pickle(self.dori, processed)
         else:
             self.dori = pd.read_pickle(processed)
 
         if self.use_timestamps and ("tseqs" not in self.dori or "utseqs" not in self.dori):
             self.dori = self._load_data(file_path, folds)
-            pd.to_pickle(self.dori, processed)
+            _atomic_pickle(self.dori, processed)
 
     def __len__(self):
         return len(self.dori["rseqs"])

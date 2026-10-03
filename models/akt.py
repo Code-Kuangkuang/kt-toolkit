@@ -1,3 +1,5 @@
+
+from core.model_inputs import InputSpec
 import torch
 from torch import nn
 from torch.nn.init import xavier_uniform_
@@ -20,6 +22,9 @@ class Dim(IntEnum):
 
 @MODEL_REGISTRY.register("akt")
 class AKT(nn.Module):
+    class Inputs(InputSpec):
+        supports_multi_concept = True
+
     def __init__(
         self,
         n_question=None,

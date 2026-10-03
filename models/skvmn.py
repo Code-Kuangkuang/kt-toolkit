@@ -160,6 +160,7 @@ class DKVMN(nn.Module):
 class SKVMN(Module):
     class Inputs(InputSpec):
         """Declares what this model needs; it derives nothing from the data."""
+        supports_multi_concept = True
 
         dataset_mode = "all_in_one"
 

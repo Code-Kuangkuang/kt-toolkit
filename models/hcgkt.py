@@ -457,6 +457,7 @@ class HCGKTModel(HCGKT):
 
     class Inputs(InputSpec):
         """Needs question ids, a question graph, a concept map and concept texts."""
+        supports_multi_concept = True
 
         dataset_mode = "all_in_one"
         requires_question_ids = True

@@ -25,6 +25,7 @@ class ATDKT(Module):
         Only the `his` embedding variants consume it, and computing it for the
         others would cost a pass over the data for a tensor nobody reads.
         """
+        supports_multi_concept = True
 
         dataset_mode = "all_in_one"
         requires_question_ids = True

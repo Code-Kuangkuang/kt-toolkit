@@ -27,6 +27,7 @@ class HQAFKT(nn.Module):
         The difficulty half rides DIMKT's `difficulty_maps` dataset argument.
         That aliasing was implicit in the runner; it is spelled out here.
         """
+        supports_multi_concept = True
 
         dataset_mode = "all_in_one"
         requires_question_ids = True

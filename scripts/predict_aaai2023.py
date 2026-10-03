@@ -38,7 +38,7 @@ def _resolve_checkpoint(ckpt_dir: Optional[Path], checkpoint: Optional[Path], mo
     ]
     matches = [p for p in candidates if p.exists()]
     if not matches:
-        matches = sorted(ckpt_dir.glob("*_model.pt"))
+        matches = []  # Never silently substitute last-epoch or another model weights.
     if not matches:
         raise FileNotFoundError(f"No checkpoint found in {ckpt_dir}.")
     return matches[0]
@@ -97,7 +97,7 @@ def _iekt_predict_row(model, questions, concepts, responses, use_pred: bool, dev
     predictions = []
 
     for q, c, r in zip(questions, concepts, responses):
-        if q < 0 or c < 0:
+        if q < 0 or (all(v < 0 for v in c) if isinstance(c, list) else c < 0):
             continue
 
         q_t = torch.tensor([q], dtype=torch.long, device=device)
@@ -138,8 +138,9 @@ def _iekt_predict_row(model, questions, concepts, responses, use_pred: bool, dev
 
 
 def _akt_predict_row(model, questions, concepts, responses, use_pred: bool, device: torch.device):
-    if any(c < 0 for c in concepts):
-        valid_len = next((i for i, c in enumerate(concepts) if c < 0), len(concepts))
+    is_pad = lambda c: all(v < 0 for v in c) if isinstance(c, list) else c < 0
+    if any(is_pad(c) for c in concepts):
+        valid_len = next((i for i, c in enumerate(concepts) if is_pad(c)), len(concepts))
         questions = questions[:valid_len]
         concepts = concepts[:valid_len]
         responses = responses[:valid_len]
@@ -159,19 +160,40 @@ def _akt_predict_row(model, questions, concepts, responses, use_pred: bool, devi
             running[pos] = 1 if prob >= 0.5 else 0
         return probs
 
-    target = torch.tensor([input_responses], dtype=torch.long, device=device)
-    pred_tensor, _ = model(q_data, target, pid_data) if pid_data is not None else model(q_data, target)
-    return [float(pred_tensor[0, i].detach().cpu()) for i, r in enumerate(responses) if r == -1]
+    # Independent targets use observed history only. Unknown earlier labels
+    # must not become fabricated wrong answers in the history.
+    probs = []
+    for pos, response in enumerate(responses):
+        if response != -1:
+            continue
+        history = [i for i in range(pos) if responses[i] in (0, 1)] + [pos]
+        query = torch.tensor([[concepts[i] for i in history]], dtype=torch.long, device=device)
+        target = torch.tensor([[responses[i] if i != pos else 0 for i in history]], dtype=torch.long, device=device)
+        pid = torch.tensor([[questions[i] for i in history]], dtype=torch.long, device=device) if pid_data is not None else None
+        pred, _ = model(query, target, pid) if pid is not None else model(query, target)
+        probs.append(float(pred[0, -1].detach().cpu()))
+    return probs
 
 
-def _predict_all_rows(model, df: pd.DataFrame, model_name: str, use_pred: bool, device: torch.device, label: str):
+def _predict_all_rows(model, df: pd.DataFrame, model_name: str, use_pred: bool, device: torch.device, label: str, concept_mode="multi", max_concepts=None):
     rows = []
     total = len(df)
     with torch.no_grad():
         for idx, row in enumerate(df.itertuples(index=False), start=1):
             questions = [_first_int(x) for x in row.questions.split(",")]
-            concepts = [_first_int(x) for x in row.concepts.split(",")]
+            tokens = [[int(v) for v in x.split("_")] for x in row.concepts.split(",")]
+            if concept_mode == "first":
+                concepts = [values[0] for values in tokens]
+            elif concept_mode == "multi":
+                width = max_concepts or max(len(values) for values in tokens)
+                if any(len(values) > width for values in tokens):
+                    raise ValueError("Prediction concept width exceeds the training max_concepts.")
+                concepts = [values + [-1] * (width - len(values)) for values in tokens]
+            else:
+                raise ValueError(f"Unsupported prediction concept protocol: {concept_mode!r}")
             responses = [int(x) for x in row.responses.split(",")]
+            if len({len(questions), len(concepts), len(responses)}) != 1:
+                raise ValueError(f"Prediction row {idx}: sequence lengths differ.")
             if model_name == "iekt":
                 rows.append(_iekt_predict_row(model, questions, concepts, responses, use_pred, device))
             elif model_name == "akt":
@@ -250,6 +272,13 @@ def main(
     loaded = []
     for model_idx, run_dir in enumerate(run_dirs, start=1):
         run_config_path = run_dir / "run_config.json" if run_dir is not None else None
+        run_cfg = _load_json(run_config_path) if run_config_path and run_config_path.exists() else {}
+        protocol = run_cfg.get("protocol") or {}
+        if protocol.get("dataset_mode") == "one_by_one":
+            raise ValueError("Question-level submission requires an all_in_one checkpoint; expanded concept training is unsupported.")
+        from datasets.init_dataset import resolve_concept_mode
+        concept_mode = protocol.get("concept_mode") or resolve_concept_mode(model_name, (run_cfg.get("model_config") or {}).get("concept_mode"))
+        max_concepts = (run_cfg.get("dataset_config") or {}).get("max_concepts")
         model, resolved_emb_type = _build_model_from_config(
             dataset_name=dataset_name,
             model_name=model_name,
@@ -272,6 +301,7 @@ def main(
                 use_pred,
                 device,
                 label=f"[{model_idx}/{len(run_dirs)}]",
+                concept_mode=concept_mode, max_concepts=max_concepts,
             )
         )
         loaded.append(ckpt_path)

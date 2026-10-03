@@ -44,6 +44,7 @@ function escapeHtml(value) {
 function valueKind(value) {
   if (typeof value === "boolean") return "bool";
   if (typeof value === "number") return "number";
+  if (value !== null && typeof value === "object") return "json";
   return "text";
 }
 
@@ -119,7 +120,7 @@ function readForm() {
       modelConfig[key] = Number(raw);
       return;
     }
-    modelConfig[key] = raw;
+    modelConfig[key] = kind === "json" ? JSON.parse(raw) : raw;
   });
   data.model_config = modelConfig;
   return data;
@@ -130,6 +131,7 @@ function readStructureRequest() {
   return {
     dataset_name: data.dataset_name,
     model_name: data.model_name,
+    fold: data.fold || 0,
     emb_type: data.emb_type,
     model_config: data.model_config || {},
   };

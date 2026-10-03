@@ -1033,6 +1033,7 @@ class MoCKT(MocKT):
 
     class Inputs(InputSpec):
         """Declares what this model needs; it derives nothing from the data."""
+        supports_multi_concept = True
 
         dataset_mode = "all_in_one"
         requires_question_ids = True

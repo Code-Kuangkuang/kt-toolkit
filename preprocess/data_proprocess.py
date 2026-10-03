@@ -7,7 +7,7 @@ SCAFFOLDING_DATASETS = {"assist2009", "assist2012", "assist2017"}
 
 def process_raw_data(dataset_name, dname2paths, keep_scaffolding=False):
     readf = dname2paths[dataset_name]
-    dname = "/".join(readf.split("/")[0:-1])
+    dname = os.path.dirname(readf)
     writef = os.path.join(dname, "data.txt")
     print(f"Start preprocessing data: {dataset_name}")
     if dataset_name == "assist2009":
@@ -36,13 +36,14 @@ def process_raw_data(dataset_name, dname2paths, keep_scaffolding=False):
         from .ednet_preprocess import read_data_from_csv
     elif dataset_name in {"aaai2023", "peiyou"}:
         from .aaai2022_competition import read_data_from_csv, load_q2c
+    else:
+        raise ValueError(f"Unsupported preprocessing dataset: {dataset_name}")
     
     if dataset_name == "junyi2015":
         dq2c = load_q2c(readf.replace("junyi_ProblemLog_original.csv","junyi_Exercise_table.csv"))
         read_data_from_csv(readf, writef, dq2c)
     elif dataset_name in {"aaai2023", "peiyou"}:
-        fname = readf.split("/")[-1]
-        dq2c = load_q2c(readf.replace(fname,"questions.json"))
+        dq2c = load_q2c(os.path.join(dname, "questions.json"))
         read_data_from_csv(readf, writef, dq2c)
     elif dataset_name in ["ednet5w","ednet"]:
         dname, writef = read_data_from_csv(readf, writef, dataset_name=dataset_name)

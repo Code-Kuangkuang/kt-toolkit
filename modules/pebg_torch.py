@@ -63,6 +63,28 @@ def _to_device_tensor(arr: np.ndarray, device: torch.device, dtype: torch.dtype 
     return torch.as_tensor(arr, dtype=dtype, device=device)
 
 
+def backward_pair_loss(embedding, indices, targets, block_size):
+    """Exact all-pairs BCE gradients with bounded dense activation memory.
+
+    Each column block gets a fresh lookup graph and contributes its sum divided
+    by the full B*Q denominator. The caller zeros gradients once and steps once.
+    This changes storage, not the training objective or negative examples.
+    """
+    if block_size <= 0:
+        raise ValueError("pair_block_size must be positive for blocked backward.")
+    count = embedding.num_embeddings
+    rows = indices.detach().cpu().numpy()
+    total = 0.0
+    for start in range(0, count, block_size):
+        end = min(start + block_size, count)
+        logits = embedding(indices) @ embedding.weight[start:end].T
+        labels = _to_device_tensor(targets[rows, start:end].toarray(), embedding.weight.device)
+        loss = F.binary_cross_entropy_with_logits(logits, labels, reduction="sum") / (len(rows) * count)
+        loss.backward()
+        total += float(loss.detach())
+    return total
+
+
 def _build_cli() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="PyTorch PEBG pretraining")
     parser.add_argument("--data_dir", type=str, required=True, help="Absolute/relative data directory that contains PEBG assets")
@@ -72,6 +94,7 @@ def _build_cli() -> argparse.Namespace:
     parser.add_argument("--keep_prob", type=float, default=0.5, help="Dropout keep probability (same meaning as TF code)")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
     parser.add_argument("--batch_size", type=int, default=256, help="Batch size")
+    parser.add_argument("--pair_block_size", type=int, default=0, help="Exact pair BCE column block size; 0 keeps dense computation")
     parser.add_argument("--epochs", type=int, default=200, help="Training epochs")
     parser.add_argument("--seed", type=int, default=3407, help="Random seed")
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"], help="Training device")
@@ -173,13 +196,15 @@ def main():
             batch_aux_target = _to_device_tensor(aux_target_all[b:e], device=device)
 
             batch_pro_skill_targets = _to_device_tensor(pro_skill_csr[batch_idx_np].toarray().astype(np.float32), device=device)
-            batch_pro_pro_targets = _to_device_tensor(pro_pro_csr[batch_idx_np].toarray().astype(np.float32), device=device)
+            if args.pair_block_size <= 0:
+                batch_pro_pro_targets = _to_device_tensor(pro_pro_csr[batch_idx_np].toarray().astype(np.float32), device=device)
 
             pro_embed = model.pro_embedding(batch_pro)
             skill_embed_matrix = model.skill_embedding.weight
 
             pro_skill_logits = pro_embed @ skill_embed_matrix.T
-            pro_pro_logits = pro_embed @ model.pro_embedding.weight.T
+            if args.pair_block_size <= 0:
+                pro_pro_logits = pro_embed @ model.pro_embedding.weight.T
             skill_skill_logits = skill_embed_matrix @ skill_embed_matrix.T
 
             denom = batch_pro_skill_targets.sum(dim=1, keepdim=True).clamp(min=1.0)
@@ -188,12 +213,16 @@ def main():
             _, aux_pred = model.pnn(pro_embed, skill_embed, diff_feat_embed)
 
             loss_ps = bce_logits(pro_skill_logits, batch_pro_skill_targets)
-            loss_pp = bce_logits(pro_pro_logits, batch_pro_pro_targets)
+            optimizer.zero_grad()
+            if args.pair_block_size > 0:
+                loss_pp = pro_embed.new_tensor(backward_pair_loss(
+                    model.pro_embedding, batch_pro, pro_pro_csr, args.pair_block_size))
+            else:
+                loss_pp = bce_logits(pro_pro_logits, batch_pro_pro_targets)
             loss_ss = bce_logits(skill_skill_logits, skill_skill_targets)
             loss_aux = mse_loss(aux_pred, batch_aux_target)
             loss = loss_aux + loss_ps + loss_pp + loss_ss
 
-            optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 

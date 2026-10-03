@@ -1,3 +1,5 @@
+
+from core.model_inputs import InputSpec
 import torch
 import torch.nn as nn
 from torch.nn import Module, Parameter, Embedding, Linear, Dropout
@@ -9,6 +11,9 @@ from .multi_concept import pool_concept_embeddings, pool_interaction_embeddings
 
 @MODEL_REGISTRY.register("deep_irt")
 class DeepIRT(Module):
+    class Inputs(InputSpec):
+        supports_multi_concept = True
+
     def __init__(
         self,
         num_q,

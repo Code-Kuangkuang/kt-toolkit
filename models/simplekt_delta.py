@@ -8,6 +8,8 @@ and causal backbone logits [B,L] -> residual memory [B,D] -> logits [B,L].
 The trainer reconstructs L=T+1 and scores logits[:,1:] using smasks [B,T].
 """
 
+from core.model_inputs import InputSpec
+
 import math
 
 import torch
@@ -25,6 +27,7 @@ class SimpleKTDelta(nn.Module):
     composed_of = (SimpleKT,)
 
     class Inputs(SimpleKT.Inputs):
+        supports_multi_concept = True
         dataset_mode = "all_in_one"
         requires_question_ids = True
 

@@ -6,9 +6,11 @@ import uuid
 import torch
 from rich import print
 
-from core.factory import build_dataset, build_model, build_trainer
+from core.experiment_identity import build_experiment_identity
+from core.factory import build_dataset, build_trainer
 from core.dataset_names import is_hidden_label_dataset, normalize_dataset_name
 from core.model_info import collect_model_info, save_model_info_once
+from core.model_build import prepare_model_inputs, construct_prepared_model
 from core.model_inputs import RunContext, spec_for
 from core.registry import MODEL_REGISTRY
 from core.run_support import (
@@ -25,19 +27,7 @@ from core.run_support import (
 from datasets.init_dataset import protocol_stamp
 
 
-MODEL_NAME_ALIASES = {
-    "dkt-forget": "dkt_forget",
-    "hd-kt": "hdkt",
-    "hd_lpkt": "hdkt",
-    "hd-lpkt": "hdkt",
-    "hd-dkt": "hd_dkt",
-    "hd-akt": "hd_akt",
-    "hd-simplekt": "hd_simplekt",
-
-    "lefokt": "lefokt_akt",
-    "hqaf-kt": "hqaf",
-    "hqaf_kt": "hqaf",
-}
+from core.model_names import MODEL_NAME_ALIASES
 
 
 # Keys that live in a model's config block but are consumed by something other
@@ -144,6 +134,11 @@ def train_one_fold(
 ):
     dataset_name = normalize_dataset_name(dataset_name)
     model_name = MODEL_NAME_ALIASES.get(model_name.lower(), model_name.lower())
+    experiment = build_experiment_identity(
+        root_dir=root_dir, dataset_name=dataset_name, model_name=model_name,
+        kt_cfg_raw=kt_cfg_raw, data_config_raw=data_config_raw, seed=seed, fold_id=fold_id,
+        emb_type=emb_type, overrides=overrides, train_label_flip_ratio=train_label_flip_ratio,
+        train_label_flip_seed=train_label_flip_seed)
     kt_cfg = copy.deepcopy(kt_cfg_raw)
     train_cfg_local = kt_cfg["train_config"]
     if model_name not in kt_cfg:
@@ -157,7 +152,13 @@ def train_one_fold(
     resolved_emb_type = emb_type or model_cfg_local.get("emb_type", "qid")
     model_cfg_local["emb_type"] = resolved_emb_type
 
+    from core.config_schema import validate_model_overrides
+    from core.run_support import MODEL_OVERRIDE_KEYS
+    validate_model_overrides(model_name, {k: v for k, v in (overrides or {}).items()
+                                        if k in MODEL_OVERRIDE_KEYS and v is not None}, model_cfg_local)
     apply_overrides(train_cfg_local, model_cfg_local, overrides)
+    resolved_emb_type = emb_type or model_cfg_local["emb_type"]
+    model_cfg_local["emb_type"] = resolved_emb_type
 
     train_label_flip_ratio = float(train_label_flip_ratio)
     if not 0.0 <= train_label_flip_ratio <= 1.0:
@@ -186,14 +187,7 @@ def train_one_fold(
             dpath = os.path.join(root_dir, dpath)
         dataset_cfg_local["dpath"] = os.path.normpath(dpath)
 
-    # Migration in progress: models that declare an `Inputs` spec get their
-    # extra inputs from it, and the `model_name` chain below is skipped for
-    # them. See "Model Input Specs" in docs/architecture.md; the chain shrinks by
-    # one model at a time, and each move is checked for bit-identical metrics by
-    # research/check_input_refactor.py.
-    #
-    # Looked up before the mode is resolved, because the spec is allowed to
-    # declare that mode.
+    # Every model declares its input preparation next to its implementation.
     if model_name not in MODEL_REGISTRY.get_all():
         raise KeyError(
             f"Model {model_name!r} is not registered. Registered models: "
@@ -225,10 +219,7 @@ def train_one_fold(
             dataset_cfg_local, primary, fallback
         ),
     )
-    spec.validate(spec_ctx)
-    spec_inputs = spec.prepare(spec_ctx)
-    model_cfg_local.update(spec_inputs.model_cfg_updates)
-    dataset_cfg_local.update(spec_inputs.dataset_cfg_updates)
+    spec_inputs = prepare_model_inputs(spec_ctx)
 
     # Which splits this run's derived inputs were fitted from, recorded in the
     # protocol block. Set at the site that does the fitting rather than from a
@@ -255,11 +246,6 @@ def train_one_fold(
     # Migrated: every model that derives inputs now declares them in its own
     # `Inputs` spec, applied above. What remains below is the generic path.
 
-    model_kwargs = {
-        k: v for k, v in model_cfg_local.items() if k not in NON_MODEL_CONFIG_KEYS
-    }
-    # Applied last so a spec wins over the legacy chain during the migration.
-    model_kwargs.update(spec_inputs.model_kwargs)
     # A spec reports its own fit scope; `None` means it has nothing to declare.
     if spec_inputs.feature_fit_scope is not None:
         feature_fit_scope = spec_inputs.feature_fit_scope
@@ -272,28 +258,13 @@ def train_one_fold(
     set_seed(seed)
 
     # Set device with specified GPU ID
-    if torch.cuda.is_available():
+    if gpu_id >= 0 and torch.cuda.is_available():
         device = f"cuda:{gpu_id}"
         torch.cuda.set_device(gpu_id)
     else:
         device = "cpu"
 
-    model = build_model(
-        model_name,
-        num_c=dataset_cfg_local["num_c"],
-        num_q=dataset_cfg_local["num_q"],
-        emb_type=resolved_emb_type,
-        seq_len=train_cfg_local.get("seq_len"),
-        device=device,
-        dpath=dataset_cfg_local.get("dpath", ""),
-        num_at=model_cfg_local.get("num_at"),
-        num_it=model_cfg_local.get("num_it"),
-        **model_kwargs,
-    ).to(device)
-
-    # Hawkes applies its own init and runs in double precision; that is the only
-    # post-construction work any model needs, and it lives in its spec.
-    model = spec.post_build(model, spec_ctx)
+    model = construct_prepared_model(spec_ctx, spec_inputs, device)
 
     # What was built, as opposed to what was asked for. Written to save_root
     # rather than the fold's directory so a five-fold run produces one file --
@@ -336,6 +307,9 @@ def train_one_fold(
         "concept_mode": model_cfg_local.get("concept_mode"),
     }
     dataset_feature_kwargs.update(spec_inputs.dataset_kwargs)
+    dataset_feature_kwargs.update({k: train_cfg_local[k] for k in
+                                   ("num_workers", "pin_memory", "persistent_workers", "prefetch_factor")
+                                   if k in train_cfg_local})
 
     train_loader, valid_loader = build_dataset(
         "kt_default",
@@ -503,8 +477,12 @@ def train_one_fold(
     if add_uuid == 1:
         run_name = f"{run_name}-{uuid.uuid4()}"
     ckpt_dir = os.path.join(save_root, run_name)
+    if os.path.exists(ckpt_dir):
+        run_name += "-" + uuid.uuid4().hex[:8]
+        ckpt_dir = os.path.join(save_root, run_name)
 
     run_config = {
+        "experiment": experiment,
         "run_name": run_name,
         "timestamp": ts,
         "save_dir": save_root,
@@ -582,6 +560,12 @@ def train_one_fold(
     # Attached rather than passed through __init__: every trainer subclass
     # declares its own constructor, so a new keyword would break all of them.
     trainer.window_test_loader = window_test_loader
+    from core.checkpoint import load_recovery
+    trainer.experiment_key = experiment["key"]
+    trainer.recovery_path = os.path.join(ckpt_dir, "training_checkpoint.pt")
+    trainer.max_grad_norm = train_cfg_local.get("max_grad_norm", float("inf"))
+    if train_cfg_local.get("resume_checkpoint"):
+        load_recovery(trainer, train_cfg_local["resume_checkpoint"], experiment["key"])
     trainer.run()
 
     best_path = getattr(trainer, "best_path", None)
@@ -595,7 +579,7 @@ def train_one_fold(
     best_test_metrics = None
     best_window_metrics = None
     if best_path and os.path.exists(best_path):
-        trainer.model.load_state_dict(torch.load(best_path, weights_only=True))
+        trainer.model.load_state_dict(torch.load(best_path, map_location=trainer.device, weights_only=True))
         if test_loader is not None:
             print(f"Loaded best model from epoch {trainer.best_metrics.get('epoch', '?')} for test evaluation")
             best_test_metrics = trainer.evaluate_test()
@@ -624,7 +608,7 @@ def train_one_fold(
     # turns it back on.
     last_test_metrics = None
     if test_loader is not None and bool(train_cfg_local.get("eval_last_epoch", False)):
-        trainer.model.load_state_dict(torch.load(last_epoch_path, weights_only=True))
+        trainer.model.load_state_dict(torch.load(last_epoch_path, map_location=trainer.device, weights_only=True))
         print(f"Loaded last epoch model for test evaluation")
         last_test_metrics = trainer.evaluate_test()
         if last_test_metrics:
@@ -636,7 +620,7 @@ def train_one_fold(
         # last-epoch load above is only for the secondary metric, and nothing
         # should inherit it by accident.
         if best_path and os.path.exists(best_path):
-            trainer.model.load_state_dict(torch.load(best_path, weights_only=True))
+            trainer.model.load_state_dict(torch.load(best_path, map_location=trainer.device, weights_only=True))
 
     best_metrics = getattr(trainer, "best_metrics", None)
     if best_metrics is not None:
@@ -656,6 +640,9 @@ def train_one_fold(
         save_run_config(os.path.join(ckpt_dir, "best_metrics.json"), best_metrics)
 
     return {
+        "dataset_name": dataset_name,
+        "model_name": model_name,
+        "comparison_key": experiment["comparison_key"],
         "fold": fold_id,
         "run_name": run_name,
         "ckpt_dir": ckpt_dir,

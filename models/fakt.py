@@ -827,6 +827,7 @@ class FAKT(FA_KT):
         `num_rgap` is "how many buckets do we need". Computing them reads
         `timestamps` only, never a response.
         """
+        supports_multi_concept = True
 
         dataset_mode = "all_in_one"
         requires_question_ids = True

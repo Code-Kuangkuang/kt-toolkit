@@ -1,3 +1,5 @@
+
+from core.model_inputs import InputSpec
 import torch
 import torch.nn as nn
 from torch.nn import Module, Embedding, Linear, Dropout
@@ -164,6 +166,9 @@ class Decoder_block(nn.Module):
 
 @MODEL_REGISTRY.register("saint")
 class SAINT(nn.Module):
+    class Inputs(InputSpec):
+        supports_multi_concept = True
+
     def __init__(
         self,
         num_q,

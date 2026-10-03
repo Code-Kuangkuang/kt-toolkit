@@ -188,6 +188,7 @@ class SAINTp(nn.Module):
         None. SAINT+ embeds exercises and genuinely cannot run without question
         ids, so the fix is to refuse up front rather than to repair `in_ex`.
         """
+        supports_multi_concept = True
 
         requires_question_ids = True
 

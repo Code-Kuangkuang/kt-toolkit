@@ -113,6 +113,9 @@ class InputSpec:
     #: Fail early, with the dataset named, rather than at an embedding lookup.
     requires_question_ids: bool = False
 
+    #: Can pool question-level [B,T,K] concept IDs; used by the dataset builder.
+    supports_multi_concept: bool = False
+
     #: Models whose constructor takes the question count as `num_pid`.
     needs_num_pid: bool = False
 

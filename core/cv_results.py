@@ -3,6 +3,8 @@ import json
 import os
 import statistics
 
+from core.artifacts import atomic_output
+
 from rich import print
 
 
@@ -50,11 +52,11 @@ def aggregate_fold_metrics(fold_results):
 def save_cv_summary(cv_dir, cv_payload, fold_results):
     os.makedirs(cv_dir, exist_ok=True)
     json_path = os.path.join(cv_dir, "cv_summary.json")
-    with open(json_path, "w", encoding="utf-8") as f:
+    with atomic_output(json_path) as f:
         json.dump(cv_payload, f, indent=2, ensure_ascii=True)
 
     csv_path = os.path.join(cv_dir, "cv_summary.csv")
-    with open(csv_path, "w", encoding="utf-8", newline="") as f:
+    with atomic_output(csv_path, newline="") as f:
         writer = csv.DictWriter(
             f,
             fieldnames=[

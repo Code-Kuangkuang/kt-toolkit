@@ -111,7 +111,7 @@ class HCGKTTrainer(BaseTrainer):
             loss = self._batch_loss(dcur, rshft, sm, perturb) / self.step_m
 
         loss.backward()
-        nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
+        nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip, error_if_nonfinite=True)
         self.optimizer.step()
         self.model.sfm_cl.gcl.update_target_network(self.mm)
         return float(loss.item()) * self.step_m

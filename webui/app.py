@@ -29,7 +29,12 @@ class CreateJobRequest(BaseModel):
     num_epochs: Optional[int] = Field(default=None, gt=0)
     learning_rate: Optional[float] = Field(default=None, gt=0)
     emb_size: Optional[int] = Field(default=None, gt=0)
-    dropout: Optional[float] = Field(default=None, ge=0)
+    dropout: Optional[float] = Field(default=None, ge=0, lt=1)
+    num_workers: Optional[int] = Field(default=None, ge=0)
+    pin_memory: Optional[bool] = None
+    persistent_workers: Optional[bool] = None
+    prefetch_factor: Optional[int] = Field(default=None, gt=0)
+    max_grad_norm: Optional[float] = Field(default=None, gt=0)
     gpu: int = 0
     seed: int = 3407
     use_wandb: int = 0
@@ -38,6 +43,7 @@ class CreateJobRequest(BaseModel):
 
 
 class ModelStructureRequest(BaseModel):
+    fold: int = Field(default=0, ge=0)
     dataset_name: str
     model_name: str
     emb_type: Optional[str] = None

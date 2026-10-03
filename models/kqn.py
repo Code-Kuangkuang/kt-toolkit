@@ -1,3 +1,5 @@
+
+from core.model_inputs import InputSpec
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -23,6 +25,9 @@ class KQN(nn.Module):
         dropout: dropout probability
         emb_type: embedding type
     """
+    class Inputs(InputSpec):
+        supports_multi_concept = True
+
 
     def __init__(
         self,

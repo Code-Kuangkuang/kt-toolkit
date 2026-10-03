@@ -74,6 +74,7 @@ scripts/train.py
 class Inputs(InputSpec):
     dataset_mode = "all_in_one"        # 或 "one_by_one"
     requires_question_ids = True
+    supports_multi_concept = True      # 需要池化 [B,T,K] 时声明
     needs_num_pid = True
 
     @classmethod
@@ -116,12 +117,12 @@ CSV 用 `-1` 填充作答，照搬它的长度公式在本仓库会让每行都�
 
 - `KTDataset`：单知识点序列，通常为 `[B, T]`。
 - `KTQueDataset`：题目级多知识点序列，`cseqs` 原始形状通常为 `[B, T, K]`，填充值为 `-1`。
-- 模型拿到 `[B, T]` 还是 `[B, T, K]`，由 `datasets/init_dataset.py` 的
-  `MULTI_CONCEPT_MODELS` 决定：在集合内的模型收到 `[B, T, K]`，需要用
+- 模型拿到 `[B, T]` 还是 `[B, T, K]`，由模型 `Inputs.supports_multi_concept` 决定；`datasets/init_dataset.py` 的
+  `MULTI_CONCEPT_MODELS` 从注册表声明生成：在集合内的模型收到 `[B, T, K]`，需要用
   `models/multi_concept.py` 的 `pool_concept_embeddings` /
   `pool_interaction_embeddings` 做掩码均值池化；不在集合内的走 `concept_mode="first"`，
   只读第一个知识点。
-- **两者的结果不可直接比较。** 新增模型若不加入该集合，会静默变成"只读首知识点"，
+- **两者的结果不可直接比较。** 新增模型若不声明多知识点支持，会采用"只读首知识点"，
   与同批对比模型跑在不同的概念协议上。`dataset_mode` 同理由
   `ALL_IN_ONE_DATASET_MODELS` / `ONE_BY_ONE_DATASET_MODELS` 决定。
 
@@ -157,8 +158,8 @@ masked target  [N_valid]
 4. 在 `core/trainers/__init__.py` 导入 Trainer。
 5. 在 `configs/kt_config.json` 增加默认超参数。
 6. 确认 `configs/data_config.json` 中目标数据集包含所需字段。
-7. 在 `datasets/init_dataset.py` 把模型名加入 `ALL_IN_ONE_DATASET_MODELS`
-   （或 `ONE_BY_ONE_DATASET_MODELS`），多知识点模型还要加入 `MULTI_CONCEPT_MODELS`。
+7. 在模型 `Inputs` 声明 `dataset_mode` 与 `supports_multi_concept`；
+   `datasets/init_dataset.py` 的兼容集合自动从注册表生成，不手动维护模型名单。
 8. 若新增了需要被扫参的超参数名，加入 `core/run_support.py::apply_overrides` 的白名单；
    不在名单里的 key 会抛 `KeyError`。
 9. 若 `Inputs.prepare` 需要读真实数据（图、难度表、时间桶），在

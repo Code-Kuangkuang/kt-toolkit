@@ -7,6 +7,35 @@ from rich import print
 from core.cv_results import aggregate_fold_metrics, print_cv_summary, save_cv_summary
 
 
+TRAIN_OVERRIDE_KEYS = {
+    'batch_size', 'dataset_mode', 'max_grad_norm', 'num_epochs',
+    'num_workers', 'patience', 'persistent_workers', 'pin_memory',
+    'prefetch_factor', 'resume_checkpoint',
+}
+MODEL_OVERRIDE_KEYS = {
+    'clean_prior', 'd_ff', 'd_model', 'difficult_levels',
+    'dropout', 'dropout_kk', 'dropout_qk', 'emb_size',
+    'emb_type', 'epsilon', 'frequency_gamma', 'frequency_tau',
+    'frozen_difficulty_alpha', 'frozen_difficulty_group_seed', 'graph_seed', 'group_source',
+    'history_mode', 'kc_embedding_source', 'kc_graph_source', 'kd_lambda',
+    'kd_temperature', 'kernel_size1', 'kernel_size2', 'kl_warmup_epochs',
+    'lambda_conf', 'lambda_geo', 'lambda_kl', 'lambda_prior',
+    'lambda_radius', 'lambda_rel', 'lambda_step', 'lambda_theta',
+    'learning_rate', 'mastery_bound', 'mastery_step', 'mastery_update_hidden',
+    'max_concept_fusion_weight', 'memory_dim', 'memory_rate', 'memory_rule',
+    'modulation_type', 'n_blocks', 'normalize_centers', 'num_attn_heads',
+    'num_blocks', 'num_clusters', 'num_gcn_layers', 'question_graph_source',
+    'radius_update_mode', 'reliability_hidden', 'reliability_init', 'residual_detach',
+    'response_function', 'spread_rate_init', 'spread_rate_max', 'spread_type',
+    'update_student_radius', 'use_backbone', 'use_bbp_radius_normalization', 'use_concept_readout',
+    'use_coverage', 'use_dynamic_fusion', 'use_frequency_scale', 'use_geometry_in_filter',
+    'use_hierarchical_requirement', 'use_kab_radius_features', 'use_mastery', 'use_point_space',
+    'use_question_radius', 'use_radius_discrimination', 'use_radius_state_update', 'use_reliability',
+    'use_scalar_item_difficulty', 'use_sequence_distance_attention', 'use_student_radius', 'use_time_aware_kab',
+    'use_time_distance_attention', 'use_time_forgetting', 'use_timestamps',
+}
+
+
 def set_seed(seed):
     """Set the global random seed for Python, NumPy, and PyTorch."""
     import numpy as np
@@ -128,9 +157,9 @@ def print_run_overview(device, model, model_cfg, dataset_cfg, train_cfg,
 
 
 def save_run_config(path, payload):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=True)
+    from core.artifacts import atomic_output
+    with atomic_output(path) as f:
+        json.dump(payload, f, indent=2, ensure_ascii=True, allow_nan=False)
 
 
 def apply_overrides(train_cfg, model_cfg, overrides):
@@ -146,98 +175,8 @@ def apply_overrides(train_cfg, model_cfg, overrides):
 
     Adding a key means adding it to `train_keys` or `model_keys` below.
     """
-    train_keys = {"batch_size", "num_epochs", "dataset_mode", "patience"}
-    model_keys = {
-        "learning_rate",
-        "emb_size",
-        "dropout",
-        "kd_lambda",
-        "kernel_size1",
-        "kernel_size2",
-        "kd_temperature",
-        "d_model",
-        "d_ff",
-        "num_attn_heads",
-        "n_blocks",
-        "num_blocks",
-        "difficult_levels",
-        "emb_type",
-        "epsilon",
-        "lambda_theta",
-        "lambda_radius",
-        "lambda_conf",
-        "lambda_geo",
-        "lambda_step",
-        "lambda_rel",
-        "lambda_kl",
-        "lambda_prior",
-        "kl_warmup_epochs",
-        "clean_prior",
-        "frequency_tau",
-        "frequency_gamma",
-        "use_frequency_scale",
-        "reliability_hidden",
-        "reliability_init",
-        "use_reliability",
-        "use_geometry_in_filter",
-        "use_hierarchical_requirement",
-        "use_bbp_radius_normalization",
-        "use_radius_discrimination",
-        "use_kab_radius_features",
-        "use_radius_state_update",
-        "use_coverage",
-        "use_backbone",
-        "use_student_radius",
-        "use_question_radius",
-        "update_student_radius",
-        "radius_update_mode",
-        "normalize_centers",
-        "use_point_space",
-        "use_concept_readout",
-        "history_mode",
-        "use_sequence_distance_attention",
-        "use_time_distance_attention",
-        "use_time_aware_kab",
-        "use_time_forgetting",
-        "use_timestamps",
-        "use_dynamic_fusion",
-        "use_scalar_item_difficulty",
-        "max_concept_fusion_weight",
-        "response_function",
-        # SimpleKT's frozen difficulty table. `alpha` sets how hard an item is
-        # pulled towards its shrinkage target: the weight is alpha / (n_i + alpha),
-        # so at the default 10 it is 75% on algebra2005 (3.3 obs/item) and 4.8% on
-        # assist2017 (196). Leaving it fixed across datasets means the arms are
-        # not the same method at different sample sizes, they are different
-        # methods -- which is why it has to be sweepable.
-        "frozen_difficulty_alpha",
-        "frozen_difficulty_group_seed",
-        # Residual associative-memory experiment and its matched controls.
-        "memory_rule",
-        "memory_dim",
-        "memory_rate",
-        "residual_detach",
-        # CGMKT. The first three pick which side of the paper/code disagreement
-        # a run takes (see models/cgmkt_graphs.py); they have to be sweepable
-        # because the comparison between them IS the experiment.
-        "question_graph_source",
-        "kc_graph_source",
-        "kc_embedding_source",
-        "use_mastery",
-        "group_source",
-        "graph_seed",
-        "num_clusters",
-        "num_gcn_layers",
-        "dropout_qk",
-        "dropout_kk",
-        "mastery_update_hidden",
-        "mastery_step",
-        "mastery_bound",
-        "modulation_type",
-        "spread_type",
-        "spread_rate_init",
-        "spread_rate_max",
-    }
+    train_keys = TRAIN_OVERRIDE_KEYS
+    model_keys = MODEL_OVERRIDE_KEYS
     overrides = overrides or {}
     unknown = sorted(set(overrides) - train_keys - model_keys)
     if unknown:

@@ -464,6 +464,7 @@ def _run_pebg_training(args, output_dir: str):
         "--keep_prob", str(args.keep_prob),
         "--lr", str(args.lr),
         "--batch_size", str(args.batch_size),
+        "--pair_block_size", str(args.pair_block_size),
         "--epochs", str(args.epochs),
         "--seed", str(args.seed),
         "--device", args.device,
@@ -505,6 +506,7 @@ def main():
     parser.add_argument("--keep_prob", type=float, default=0.5)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--batch_size", type=int, default=256)
+    parser.add_argument("--pair_block_size", type=int, default=0, help="Exact blocked all-pairs BCE; 0 uses dense mode")
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--seed", type=int, default=3407)
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
@@ -609,6 +611,13 @@ def main():
     _save_assets(assets, dataset_dir=dataset_dir, output_dir=output_dir)
 
     output_emb = _run_pebg_training(args, output_dir=output_dir)
+    from core.experiment_identity import file_revision
+    from core.run_support import save_run_config
+    save_run_config(os.path.join(output_dir, "pretrain_manifest.json"), {
+        "version": 1, "dataset_name": args.dataset_name, "excluded_fold": args.fold,
+        "feature_fit_scope": "train_folds" if args.fold is not None else "train_valid_test",
+        "source_revision": file_revision(sequence_path), "embedding_revision": file_revision(output_emb),
+        "config": vars(args)})
 
     print("[pretrain_pebg] Done.")
     print(f"[pretrain_pebg] embedding_file={output_emb}")

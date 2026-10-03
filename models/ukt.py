@@ -93,6 +93,7 @@ class WassersteinNCELoss(nn.Module):
 class UKT(nn.Module):
     class Inputs(InputSpec):
         """Declares what this model needs; it derives nothing from the data."""
+        supports_multi_concept = True
 
         needs_num_pid = True
 

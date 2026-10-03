@@ -56,6 +56,7 @@ class HDKT(nn.Module):
         one_by_one reads every split, which is the historical pyKT behaviour and
         is recorded as such rather than silently changed.
         """
+        supports_multi_concept = True
 
         dataset_mode = "all_in_one"
         requires_question_ids = True

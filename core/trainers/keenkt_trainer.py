@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -105,27 +104,7 @@ class KeenKTTrainer(BaseTrainer):
         self.patience = patience
         self.other_config = other_config or {}
 
-    def _train_epoch(self, epoch):
-        self.model.train()
-        losses = []
-        total_batches = len(self.train_loader)
-
-        print(f"\n== Epoch {epoch}/{self.num_epochs} ==")
-        print("=" * 50)
-        for batch_idx, batch in enumerate(self.train_loader):
-            pred, _, loss = self._forward_batch(batch, train=True)
-            if pred.numel() == 0:
-                continue
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
-            losses.append(float(loss.item()))
-            self._print_progress(
-                batch_idx,
-                total_batches,
-                float(loss.item()),
-            )
-        return float(np.mean(losses)) if losses else 0.0
+    training_forward_kwargs = {'train': True}
 
     def _forward_batch(self, batch, train=False):
         concepts = _full_sequence(

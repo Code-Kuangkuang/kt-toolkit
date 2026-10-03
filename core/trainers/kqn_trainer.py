@@ -1,4 +1,3 @@
-import numpy as np
 import torch
 from torch.nn.functional import binary_cross_entropy
 
@@ -30,28 +29,6 @@ class KQNTrainer(BaseTrainer):
         self.metric_key = metric_key
         self.patience = patience
 
-    def _train_epoch(self, epoch):
-        self.model.train()
-        losses = []
-        total_batches = len(self.train_loader)
-
-        print(f"\n== Epoch {epoch}/{self.num_epochs} ==")
-        print("=" * 50)
-
-        for batch_idx, batch in enumerate(self.train_loader):
-            pred, target, loss = self._forward_batch(batch)
-            if pred.numel() == 0:
-                continue
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
-            losses.append(loss.item())
-
-            # Progress bar
-            self._print_progress(batch_idx, total_batches, loss.item())
-
-
-        return float(np.mean(losses)) if losses else 0.0
 
     def _forward_batch(self, batch):
         qseqs = batch.get("qseqs")

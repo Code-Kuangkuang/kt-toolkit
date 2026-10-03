@@ -55,7 +55,7 @@ def run_dir_name(dataset, model, fold, seed):
     return f"{dataset}__{model}__fold{fold}__seed{seed}"
 
 
-def find_result(save_root, dataset, model, fold, seed):
+def find_result(save_root, dataset, model, fold, seed, expected_identity=None):
     """The finished run for this cell, or None.  Presence of best_metrics.json
     is the completion marker -- it is written only after test evaluation."""
     base = Path(save_root) / run_dir_name(dataset, model, fold, seed)
@@ -73,6 +73,12 @@ def find_result(save_root, dataset, model, fold, seed):
             }
         except json.JSONDecodeError:
             continue
+        if expected_identity is not None:
+            from core.experiment_identity import best_checkpoint
+            if (found["config"].get("experiment") or {}).get("key") != expected_identity["key"]:
+                continue
+            if best_checkpoint(metrics_path.parent, found["config"]) is None:
+                continue
         # How many epochs actually ran, so the aggregate view can say whether the
         # best-validation epoch was also the last one. When it is, training
         # stopped while the model was still improving and the row is a lower
@@ -247,12 +253,15 @@ def aggregate_dataset_block(dataset, subset, models, folds):
     return lines
 
 
-def summarize(save_root, datasets, models, folds, seed, out_path, aggregate=False):
+def summarize(save_root, datasets, models, folds, seed, out_path, aggregate=False, identities=None):
+    from core.experiment_identity import fingerprint
     rows, missing, unstamped = [], [], []
+    comparison_keys = {}
     for dataset in datasets:
         for model in models:
             for fold in folds:
-                found = find_result(save_root, dataset, model, fold, seed)
+                found = find_result(save_root, dataset, model, fold, seed,
+                                    (identities or {}).get((dataset, model, fold)))
                 if found is None:
                     missing.append((dataset, model, fold))
                     continue
@@ -260,6 +269,12 @@ def summarize(save_root, datasets, models, folds, seed, out_path, aggregate=Fals
                 if key is None:
                     unstamped.append((dataset, model, fold))
                     continue
+                config = found["config"]
+                comparison = (config.get("experiment") or {}).get("comparison_key") or fingerprint({
+                    k: config.get(k) for k in ("train_config", "model_config", "dataset_config", "emb_type")})
+                previous = comparison_keys.setdefault((dataset, model, key), comparison)
+                if previous != comparison:
+                    raise ValueError(f"{dataset}/{model}: folds use different experiment configurations; cannot combine.")
                 rows.append({
                     "dataset": dataset, "model": model, "fold": fold,
                     "protocol": key, "metrics": found["metrics"],
@@ -353,9 +368,13 @@ def main():
     extra = shlex.split(args.train_args)
     failures = []
 
+    identities = {}
     if not args.summarize_only:
+        from scripts.train import experiment_identity_for_args
+        identities = {(d, m, f): experiment_identity_for_args(d, m, f, args.seed, extra)
+                      for d in args.datasets for m in args.models for f in args.folds}
         todo = [(d, m, f) for d in args.datasets for m in args.models for f in args.folds
-                if args.rerun or find_result(args.save_root, d, m, f, args.seed) is None]
+                if args.rerun or find_result(args.save_root, d, m, f, args.seed, identities[(d, m, f)]) is None]
         done = len(args.datasets) * len(args.models) * len(args.folds) - len(todo)
         print(f"待跑 {len(todo)} 格，已完成 {done} 格（已完成的会跳过，用 --rerun 强制重跑）\n")
         if args.dry_run:
@@ -384,7 +403,7 @@ def main():
         print(f"\n每格的用时与退出码：{manifest_path}\n")
 
     summary_status = summarize(args.save_root, args.datasets, args.models,
-                               args.folds, args.seed, args.out, aggregate=args.aggregate)
+                               args.folds, args.seed, args.out, aggregate=args.aggregate, identities=identities)
     return 1 if failures else summary_status
 
 

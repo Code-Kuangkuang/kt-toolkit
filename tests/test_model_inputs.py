@@ -36,7 +36,9 @@ def context(**overrides):
 
 class SpecLookupTest(unittest.TestCase):
     def test_model_without_a_spec_gets_the_default(self):
-        self.assertIs(spec_for(MODEL_REGISTRY.get("dkt")), InputSpec)
+        class PlainModel:
+            pass
+        self.assertIs(spec_for(PlainModel), InputSpec)
 
     def test_model_with_a_spec_gets_its_own(self):
         spec = spec_for(MODEL_REGISTRY.get("gkt"))

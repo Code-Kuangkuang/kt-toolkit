@@ -1,3 +1,5 @@
+
+from core.model_inputs import InputSpec
 # coding: utf-8
 import torch
 import torch.nn as nn
@@ -285,6 +287,9 @@ class IEKT(nn.Module):
         emb_path: path to pretrained embeddings
         pretrain_dim: dimension of pretrained embeddings
     """
+    class Inputs(InputSpec):
+        supports_multi_concept = True
+
 
     def __init__(
         self,

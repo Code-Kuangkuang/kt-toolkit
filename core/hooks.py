@@ -56,7 +56,8 @@ class SaveBestHook(Hook):
             self.best = value
             os.makedirs(self.save_dir, exist_ok=True)
             save_path = os.path.join(self.save_dir, self.filename)
-            torch.save(trainer.model.state_dict(), save_path)
+            from core.checkpoint import atomic_torch_save
+            atomic_torch_save(trainer.model.state_dict(), save_path)
             trainer.best_path = save_path
 
 

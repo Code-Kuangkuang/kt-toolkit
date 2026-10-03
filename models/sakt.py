@@ -1,3 +1,5 @@
+
+from core.model_inputs import InputSpec
 import torch
 
 from torch.nn import Module, Embedding, Linear, MultiheadAttention, LayerNorm, Dropout
@@ -7,6 +9,9 @@ from .multi_concept import pool_concept_embeddings, pool_interaction_embeddings
 
 @MODEL_REGISTRY.register("sakt")
 class SAKT(Module):
+    class Inputs(InputSpec):
+        supports_multi_concept = True
+
     def __init__(self, num_c, seq_len, emb_size, num_attn_heads, dropout, num_en=2, emb_type="qid", emb_path="", pretrain_dim=768):
         super().__init__()
         self.model_name = "sakt"

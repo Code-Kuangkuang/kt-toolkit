@@ -1,4 +1,5 @@
 import sys
+import time
 
 import numpy as np
 import torch
@@ -17,9 +18,18 @@ class BaseTrainer:
 
     def run(self):
         self.hooks.train_start(self)
-        for epoch in range(1, self.num_epochs + 1):
+        from core.checkpoint import restore_rng, save_recovery
+        if hasattr(self, "_resume_rng"):
+            restore_rng(self._resume_rng)
+        start = getattr(self, "start_epoch", 1)
+        if getattr(self, "stopped_early", False):
+            start = self.num_epochs + 1
+        for epoch in range(start, self.num_epochs + 1):
             train_loss = self._train_epoch(epoch)
+            eval_started = time.perf_counter()
             metrics_dict = self._eval_epoch(epoch)
+            metrics_dict.update(getattr(self, "epoch_profile", {}))
+            metrics_dict["validation_seconds"] = time.perf_counter() - eval_started
             metrics_dict["train_loss"] = train_loss
             metrics_dict["epoch"] = epoch
             self.hooks.epoch_end(self, metrics_dict)
@@ -31,12 +41,51 @@ class BaseTrainer:
             # set regardless of what the banner says. Test scoring happens once,
             # in train_runner, against the best-validation checkpoint.
             self._log_epoch(metrics_dict)
-            if self._should_stop(epoch, metrics_dict):
+            self.current_epoch = epoch
+            self.stopped_early = self._should_stop(epoch, metrics_dict)
+            save_recovery(self)
+            if self.stopped_early:
                 break
         self.hooks.train_end(self)
 
+    training_forward_kwargs = {}
+
     def _train_epoch(self, epoch):
-        raise NotImplementedError
+        self.model.train()
+        losses = []
+        total_batches = len(self.train_loader)
+        print(f"\n== Epoch {epoch}/{self.num_epochs} ==")
+        print("=" * 50)
+        data_seconds = step_seconds = 0.0
+        tick = time.perf_counter()
+        for batch_idx, batch in enumerate(self.train_loader):
+            data_seconds += time.perf_counter() - tick
+            tick = time.perf_counter()
+            result = self._forward_batch(batch, **self.training_forward_kwargs)
+            pred, target, loss = result[0], result[1], result[-1]
+            if pred.shape != target.shape:
+                raise ValueError(f"{type(self).__name__}: prediction/target shapes differ.")
+            if pred.numel() == 0:
+                tick = time.perf_counter()
+                continue
+            if loss.numel() != 1 or not torch.isfinite(loss).all():
+                raise FloatingPointError(f"{type(self).__name__}: loss must be a finite scalar.")
+            self.optimizer.zero_grad()
+            loss.backward()
+            parameters = [p for p in self.model.parameters() if p.grad is not None]
+            # Even without clipping, the norm check prevents corrupt optimizer updates.
+            torch.nn.utils.clip_grad_norm_(parameters, getattr(self, "max_grad_norm", float("inf")),
+                                           error_if_nonfinite=True)
+            self.optimizer.step()
+            value = float(loss.item())
+            losses.append(value)
+            self._print_progress(batch_idx, total_batches, value)
+            step_seconds += time.perf_counter() - tick
+            tick = time.perf_counter()
+        if not losses:
+            raise ValueError(f"{type(self).__name__}: training epoch had no scored positions.")
+        self.epoch_profile = {"data_wait_seconds": data_seconds, "train_step_seconds": step_seconds}
+        return float(np.mean(losses))
 
     def _eval_epoch(self, epoch):
         return self._score_loader(self.valid_loader, prefix="valid")

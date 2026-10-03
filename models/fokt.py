@@ -401,6 +401,7 @@ class FoKT(AKT):
 
     class Inputs(InputSpec):
         """Asks the loader for raw timestamps unless the arm cannot use them."""
+        supports_multi_concept = True
 
         dataset_mode = "all_in_one"
         requires_question_ids = True

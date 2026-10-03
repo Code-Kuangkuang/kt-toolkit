@@ -7,9 +7,12 @@ from .nips_task34 import run as nips_task34
 from .junyi2015 import run as junyi2015
 from .slepemapy import run as slepemapy
 from .statics2011 import run as statics2011
+from .aaai2023 import run as aaai2023
 from .ednet import ednet, ednet5w
 
 ADAPTERS = {
+    "aaai2023": aaai2023,
+    "peiyou": aaai2023,
     "assist2009": assist2009,
     "assist2012": assist2012,
     "assist2017": assist2017,

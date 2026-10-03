@@ -34,6 +34,7 @@ def test_baseline_sweep_propagates_training_and_summary_failures(monkeypatch, tr
 
     monkeypatch.setattr("sys.argv", ["run_baseline_table.py", "--datasets", "fixture",
                                      "--models", "dkt", "--folds", "0"])
+    monkeypatch.setattr("scripts.train.experiment_identity_for_args", lambda *args: {"key": "fixture"})
     monkeypatch.setattr(baseline, "find_result", lambda *args: None)
     monkeypatch.setattr(baseline, "train_one", lambda *args: (train_status, .1, "mock.log"))
     monkeypatch.setattr(baseline, "record_run", lambda *args: None)

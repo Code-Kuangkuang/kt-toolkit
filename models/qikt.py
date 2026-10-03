@@ -115,6 +115,7 @@ class QIKTNet(nn.Module):
         makes the message identical to the twenty-three models that already
         declare it.
         """
+        supports_multi_concept = True
 
         requires_question_ids = True
 

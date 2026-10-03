@@ -489,6 +489,7 @@ class DenoiseKT(DenoiseKTNet):
 
     class Inputs(InputSpec):
         """Needs question ids and a question-question graph built from qmatrix."""
+        supports_multi_concept = True
 
         dataset_mode = "all_in_one"
         requires_question_ids = True

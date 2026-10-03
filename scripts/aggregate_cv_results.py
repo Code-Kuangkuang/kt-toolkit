@@ -14,6 +14,7 @@ from typing import Any, Dict, List
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from core.experiment_identity import best_checkpoint, fingerprint, validate_fold_results
 from core.cv_results import aggregate_fold_metrics, print_cv_summary, save_cv_summary
 
 
@@ -57,6 +58,10 @@ def load_fold_result(fold_dir: Path) -> Dict[str, Any]:
         result["fold"] = run_config.get("fold")
         result["emb_type"] = run_config.get("emb_type")
         result["run_name"] = run_config.get("run_name", result["run_name"])
+        result.update({k: run_config.get(k) for k in ("dataset_name", "model_name", "seed", "protocol")})
+        result["comparison_key"] = (run_config.get("experiment") or {}).get("comparison_key") or fingerprint({
+            k: run_config.get(k) for k in ("train_config", "model_config", "dataset_config")})
+        result["best_path"] = best_checkpoint(fold_dir, run_config)
     return result
 
 
@@ -68,6 +73,9 @@ def main(cv_dir: str) -> None:
         raise ValueError("No fold directories found.")
 
     fold_results = [load_fold_result(path) for _, path in fold_dirs]
+    validate_fold_results(fold_results)
+    if any(not r["best_path"] or not r["best_metrics"] for r in fold_results):
+        raise ValueError("Every fold must have best-validation weights and completed metrics.")
     aggregate = aggregate_fold_metrics(fold_results)
     payload = {
         "cv_run_name": Path(cv_dir).name,

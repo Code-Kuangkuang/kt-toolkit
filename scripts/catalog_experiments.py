@@ -99,7 +99,10 @@ def build(root):
                 standard = bool(cfg.get("model_name") and cfg.get("dataset_name"))
                 metrics = parent / "best_metrics.json"
                 data = load_json(metrics, errors) if metrics.exists() else {}
-                checkpoints = [p for p in parent.glob("*.pt") if p.name != "last_epoch_model.pt"]
+                checkpoint = next((parent / n for n in
+                    (f"{cfg.get('model_name')}_{cfg.get('emb_type', 'qid')}_model.pt", f"{cfg.get('model_name')}_model.pt")
+                    if (parent / n).is_file()), None)
+                checkpoints = [checkpoint] if checkpoint else []
                 present = metrics.exists() and bool(checkpoints) and (parent / "metrics.jsonl").exists()
                 status = "标准训练产物齐全" if standard and present else ("标准训练产物不齐（不代表失败）" if standard else "研究脚本配置（采用独立产物格式）")
                 row = {
@@ -111,6 +114,9 @@ def build(root):
                     "status": status, "valid_auc": data.get("valid_auc"),
                     "best_epoch": data.get("epoch"), "revision_note": revision_note(cfg),
                     "protocol": cfg.get("protocol", {}),
+                    "experiment_key": (cfg.get("experiment") or {}).get("key"),
+                    "best_checkpoint": checkpoint.relative_to(root).as_posix() if checkpoint else None,
+                    "recoverable": (parent / "training_checkpoint.pt").is_file(),
                 }
                 runs.append(row)
                 members.append(row)

@@ -1,3 +1,5 @@
+
+from core.model_inputs import InputSpec
 import torch
 
 from torch.nn import Module, Parameter, Embedding, Linear, Dropout
@@ -18,6 +20,9 @@ class DKVMN(Module):
         emb_path: 预训练题目嵌入路径，默认为空
         pretrain_dim: 预训练题目嵌入维度, 默认为768
     """
+    class Inputs(InputSpec):
+        supports_multi_concept = True
+
     def __init__(self, num_c, dim_s, size_m, dropout=0.2, emb_type='qid', emb_path="", pretrain_dim=768):
         super().__init__()
         self.model_name = "dkvmn"

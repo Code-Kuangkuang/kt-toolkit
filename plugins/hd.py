@@ -17,6 +17,8 @@ from modules.hd_denoiser import HybridInteractionDenoiser
 class HDInputs(InputSpec):
     """Declares what the HD backbones need; they derive nothing from the data."""
 
+    supports_multi_concept = True
+
     dataset_mode = "all_in_one"
 
 

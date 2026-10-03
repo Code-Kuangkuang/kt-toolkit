@@ -1,3 +1,5 @@
+
+from core.model_inputs import InputSpec
 import torch
 from torch.nn import Module, Embedding, LSTM, Linear, Dropout
 
@@ -6,6 +8,9 @@ from .multi_concept import pool_interaction_embeddings
 
 @MODEL_REGISTRY.register("dkt+")
 class DKTPlus(Module):
+    class Inputs(InputSpec):
+        supports_multi_concept = True
+
     def __init__(self, num_c, emb_size, lambda_r, lambda_w1, lambda_w2, dropout=0.1, emb_type="qid", emb_path="", pretrain_dim=768):
         super().__init__()
         self.model_name = "dkt+"

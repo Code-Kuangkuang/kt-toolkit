@@ -16,11 +16,13 @@ sys.path.insert(0, str(ROOT))
 import core.trainers  # register trainers
 import datasets.init_dataset  # register dataset builders
 import models  # register models
+from core.experiment_identity import build_experiment_identity, best_checkpoint, validate_fold_results
 from core.config import load_cfg
 from core.dataset_names import normalize_dataset_name
 from core.train_runner import aggregate_fold_metrics, print_cv_summary, save_cv_summary, train_one_fold
 
 app = typer.Typer(add_completion=False)
+CLI_OVERRIDE_KEYS = ('num_workers', 'pin_memory', 'persistent_workers', 'prefetch_factor', 'max_grad_norm', 'resume_checkpoint', 'batch_size', 'num_epochs', 'learning_rate', 'emb_size', 'dropout', 'patience', 'd_model', 'd_ff', 'num_attn_heads', 'n_blocks', 'question_graph_source', 'kc_graph_source', 'group_source', 'kc_embedding_source', 'use_mastery', 'num_clusters', 'graph_seed', 'frozen_difficulty_alpha', 'frozen_difficulty_group_seed', 'memory_rule', 'memory_dim', 'memory_rate')
 
 def _parse_folds_spec(spec: str):
     spec = (spec or "").strip()
@@ -65,13 +67,6 @@ def _load_json(path: Path):
         return json.load(f)
 
 
-def _find_best_model_path(run_dir: Path):
-    candidates = [p for p in run_dir.glob("*.pt") if p.name != "last_epoch_model.pt"]
-    if not candidates:
-        return None
-    return str(sorted(candidates)[0])
-
-
 def _load_completed_fold(
     cv_dir: Path,
     fold_id: int,
@@ -80,6 +75,7 @@ def _load_completed_fold(
     train_label_flip_ratio: float,
     train_label_flip_seed: int,
     seed: int,
+    expected_identity=None,
 ):
     for run_config_path in sorted(cv_dir.glob("*/run_config.json")):
         run_dir = run_config_path.parent
@@ -113,13 +109,21 @@ def _load_completed_fold(
         # run_baseline_table.py applies before putting rows in a table.
         if not run_config.get("protocol"):
             continue
+        if expected_identity is not None and (run_config.get("experiment") or {}).get("key") != expected_identity["key"]:
+            continue
+        checkpoint = best_checkpoint(run_dir, run_config)
+        if checkpoint is None:
+            continue
         return {
+            "dataset_name": dataset_name,
+            "model_name": model_name,
+            "comparison_key": (run_config.get("experiment") or {}).get("comparison_key"),
             "fold": fold_id,
             "run_name": run_config.get("run_name", run_dir.name),
             "ckpt_dir": str(run_dir),
             "emb_type": run_config.get("emb_type"),
             "best_metrics": best_metrics,
-            "best_path": _find_best_model_path(run_dir),
+            "best_path": checkpoint,
             "protocol": run_config["protocol"],
             "seed": int(run_config.get("seed", seed)),
             "skipped": True,
@@ -373,7 +377,7 @@ def main(
     gpu: int = typer.Option(
         0,
         "--gpu",
-        help="GPU device number to use for training"
+        help="GPU device number; -1 forces CPU training"
         ),
 
     # Save and logging options
@@ -393,6 +397,13 @@ def main(
         help="Whether to add a unique identifier to the run name"
         ),
 
+    num_workers: Optional[int] = typer.Option(None, "--num-workers", min=0),
+    pin_memory: Optional[bool] = typer.Option(None, "--pin-memory/--no-pin-memory"),
+    persistent_workers: Optional[bool] = typer.Option(None, "--persistent-workers/--no-persistent-workers"),
+    prefetch_factor: Optional[int] = typer.Option(None, "--prefetch-factor", min=1),
+    max_grad_norm: Optional[float] = typer.Option(None, "--max-grad-norm", min=0.000001),
+    resume_checkpoint: Optional[str] = typer.Option(None, "--resume-checkpoint"),
+
     # Config paths
     kt_config: str = typer.Option(
         "configs/kt_config.json",
@@ -411,6 +422,8 @@ def main(
         ),
 ):
     dataset_name = normalize_dataset_name(dataset_name)
+    if cv and resume_checkpoint:
+        raise typer.BadParameter("--resume-checkpoint resumes one fold; use single-fold training.")
     if not 0.0 <= train_label_flip_ratio <= 1.0:
         raise typer.BadParameter("--train-label-flip-ratio must be in [0, 1].")
     resolved_flip_seed = seed if train_label_flip_seed is None else train_label_flip_seed
@@ -421,35 +434,40 @@ def main(
     if use_wandb == 1 and os.path.exists(wandb_config):
         wandb_cfg = load_cfg(wandb_config)
 
+    overrides = {
+        "num_workers": num_workers, "pin_memory": pin_memory,
+        "persistent_workers": persistent_workers, "prefetch_factor": prefetch_factor,
+        "max_grad_norm": max_grad_norm, "resume_checkpoint": resume_checkpoint,
+        "batch_size": batch_size,
+        "num_epochs": num_epochs,
+        "learning_rate": learning_rate,
+        "emb_size": emb_size,
+        "dropout": dropout,
+        "patience": patience,
+        "d_model": d_model,
+        "d_ff": d_ff,
+        "num_attn_heads": num_attn_heads,
+        "n_blocks": n_blocks,
+        "question_graph_source": question_graph_source,
+        "kc_graph_source": kc_graph_source,
+        "group_source": group_source,
+        "kc_embedding_source": kc_embedding_source,
+        "use_mastery": use_mastery,
+        "num_clusters": num_clusters,
+        "graph_seed": graph_seed,
+        "frozen_difficulty_alpha": frozen_difficulty_alpha,
+        "frozen_difficulty_group_seed": frozen_difficulty_group_seed,
+        "memory_rule": memory_rule,
+        "memory_dim": memory_dim,
+        "memory_rate": memory_rate,
+    }
+
     def _train_one_fold(fold_id: int, save_root: str, cv_run_name: Optional[str] = None):
         # Every CLI hyperparameter option belongs here. --d-model, --d-ff,
         # --num-attn-heads and --n-blocks were accepted and then never forwarded,
         # so a run that passed them trained on the config file's values while its
         # own command line said otherwise.
-        overrides = {
-            "batch_size": batch_size,
-            "num_epochs": num_epochs,
-            "learning_rate": learning_rate,
-            "emb_size": emb_size,
-            "dropout": dropout,
-            "patience": patience,
-            "d_model": d_model,
-            "d_ff": d_ff,
-            "num_attn_heads": num_attn_heads,
-            "n_blocks": n_blocks,
-            "question_graph_source": question_graph_source,
-            "kc_graph_source": kc_graph_source,
-            "group_source": group_source,
-            "kc_embedding_source": kc_embedding_source,
-            "use_mastery": use_mastery,
-            "num_clusters": num_clusters,
-            "graph_seed": graph_seed,
-            "frozen_difficulty_alpha": frozen_difficulty_alpha,
-            "frozen_difficulty_group_seed": frozen_difficulty_group_seed,
-            "memory_rule": memory_rule,
-            "memory_dim": memory_dim,
-            "memory_rate": memory_rate,
-        }
+
         return train_one_fold(
             dataset_name=dataset_name,
             model_name=model_name,
@@ -474,6 +492,9 @@ def main(
 
     if cv == 1:
         fold_ids = _parse_folds_spec(folds)
+        declared_folds = set(data_config_raw[dataset_name]["folds"])
+        if len(fold_ids) != len(set(fold_ids)) or not set(fold_ids) <= declared_folds:
+            raise typer.BadParameter("CV folds must be unique members of the dataset folds.")
         ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         if cv_run_dir:
             cv_dir_path = _resolve_existing_cv_dir(cv_run_dir, save_dir)
@@ -502,6 +523,11 @@ def main(
                     train_label_flip_ratio,
                     resolved_flip_seed,
                     seed,
+                    expected_identity=build_experiment_identity(
+                        root_dir=str(ROOT), dataset_name=dataset_name, model_name=model_name,
+                        kt_cfg_raw=kt_cfg_raw, data_config_raw=data_config_raw, seed=seed,
+                        fold_id=fid, emb_type=emb_type, overrides=overrides,
+                        train_label_flip_ratio=train_label_flip_ratio, train_label_flip_seed=resolved_flip_seed),
                 )
                 if completed is not None:
                     print(f"\n[yellow]===== CV Fold {fid} skipped: completed run found =====[/yellow]\n")
@@ -510,6 +536,7 @@ def main(
             print(f"\n[bold]===== CV Fold {fid} / {fold_ids} =====[/bold]\n")
             fold_results.append(_train_one_fold(fid, save_root=cv_dir, cv_run_name=cv_run_name))
 
+        validate_fold_results(fold_results)
         _assert_one_protocol(fold_results)
         agg = aggregate_fold_metrics(fold_results)
         cv_payload = {
@@ -535,6 +562,22 @@ def main(
         print_cv_summary(agg, cv_dir)
     else:
         _train_one_fold(fold, save_root=save_dir, cv_run_name=None)
+
+
+def experiment_identity_for_args(dataset, model, fold, seed, extra_args):
+    import typer.main
+    command = typer.main.get_command(app)
+    with command.make_context("train", ["--dataset-name", dataset, "--model-name", model,
+                                        "--fold", str(fold), "--seed", str(seed), *extra_args]) as ctx:
+        params = ctx.params
+    if (params["dataset_name"], params["model_name"], params["fold"], params["seed"]) != (dataset, model, fold, seed):
+        raise ValueError("--train-args must not override the sweep's dataset/model/fold/seed.")
+    return build_experiment_identity(
+        root_dir=str(ROOT), dataset_name=dataset, model_name=model, fold_id=fold, seed=seed,
+        kt_cfg_raw=load_cfg(params["kt_config"]), data_config_raw=load_cfg(params["data_config_path"]),
+        emb_type=params["emb_type"], overrides={k: params[k] for k in CLI_OVERRIDE_KEYS},
+        train_label_flip_ratio=params["train_label_flip_ratio"],
+        train_label_flip_seed=params["train_label_flip_seed"])
 
 
 if __name__ == "__main__":

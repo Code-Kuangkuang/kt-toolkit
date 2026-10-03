@@ -21,6 +21,7 @@ class DKTForget(Module):
         the dataset clamps onto it. `pykt_transductive` restores pyKT's
         every-split maximum.
         """
+        supports_multi_concept = True
 
         dataset_mode = "all_in_one"
 

@@ -19,6 +19,7 @@ class DKTPEBG(Module):
         the protocol block, and the scope is read back from the directory the
         strategy actually selected rather than from what was requested.
         """
+        supports_multi_concept = True
 
         @classmethod
         def _booster_scope(cls, booster, ctx):

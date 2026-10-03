@@ -1,4 +1,3 @@
-import numpy as np
 import torch
 from torch.nn.functional import binary_cross_entropy
 
@@ -33,32 +32,10 @@ class LPKTTrainer(BaseTrainer):
         self.scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
 
     def _train_epoch(self, epoch):
-        self.model.train()
-        losses = []
-        total_batches = len(self.train_loader)
-
-        print(f"\n== Epoch {epoch}/{self.num_epochs} ==")
-        print("=" * 50)
-
-        for batch_idx, batch in enumerate(self.train_loader):
-            pred, target, loss = self._forward_batch(batch)
-            if pred.numel() == 0:
-                continue
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
-            losses.append(loss.item())
-
-            # Progress bar
-            self._print_progress(batch_idx, total_batches, loss.item())
-
-
-        # Step scheduler after each epoch (same as pykt)
-        # Use step() without epoch parameter (PyTorch 2.0+ recommendation)
-        if hasattr(self, 'scheduler'):
+        loss = super()._train_epoch(epoch)
+        if hasattr(self, "scheduler"):
             self.scheduler.step()
-
-        return float(np.mean(losses)) if losses else 0.0
+        return loss
 
     def _bucketize_time(self, time_tensor, max_index):
         # Convert raw timestamps/durations into compact, bounded indices.

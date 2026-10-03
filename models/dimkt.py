@@ -16,6 +16,7 @@ class DIMKT(Module):
         Already fold-clean before the migration: the maps come from the current
         fold's training rows only.
         """
+        supports_multi_concept = True
 
         dataset_mode = "all_in_one"
         requires_question_ids = True
